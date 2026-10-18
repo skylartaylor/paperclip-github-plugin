@@ -609,10 +609,16 @@ The inherited default-branch and outside-approval requirements remain in place.
 A model's recommendation or a tool-access profile is not human publication
 approval. Follow each repository's approval and commit-title rules.
 
-Webhooks are a follow-up transport, not included in this pilot package. Use a
-short, measured polling interval only after the manual pilot passes. A future
-receiver should authenticate raw bytes with HMAC-SHA256, bind repository id and
-company, persist/deduplicate delivery ids, combine event bursts, acknowledge
-quickly, and re-fetch authoritative GitHub state. Keep the Paperclip app behind
-Access; expose only the signed receiver route. Retain slower reconciliation for
-missed/out-of-order deliveries and respect Retry-After/rate-limit reset headers.
+## Signed webhook receiver (self-hosted fork)
+
+This fork packages `dist/webhook-receiver.js` for Node 24.22 or newer. Run it as a separate, low-priority service bound to loopback. Publish only that receiver on a dedicated hostname; keep Paperclip's UI and native API behind existing Access policies. The receiver accepts only POST on its configured exact path, checks raw-body HMAC SHA256 before persistence, caps payloads at 2 MiB and pending subjects at 100, and acknowledges after a SQLite FULL-synchronous commit. It coalesces updates for the same issue/PR or CI commit for 10 seconds (maximum 30 seconds), forwards sequentially, and retries failures with exponential backoff. After eight failures work remains stored for operator attention. Delivery IDs and body hashes are retained for seven days, capped at 100,000; a full queue/history returns 503 instead of acknowledging lost work.
+
+Set `PAPERCLIP_WEBHOOK_CONFIG` to an operator-owned JSON file containing `path`, `port` (default 3102), `database`, `repositories` (explicit owner/repo allowlist), and `upstream` (the loopback port-3100 native plugin webhook URL). Set `PAPERCLIP_WEBHOOK_SECRET_FILE` to a private file containing at least 32 random characters. The receiver and plugin must read the same signing secret. Do not put secrets into environment values, command arguments, URLs or source. Keep SQLite files and logs private. Shutdown waits for an active forward to finish.
+
+In each mapped company's plugin config set `webhooks: {enabled: true, secretFile: "/operator/private/signing-secret"}`. This is separate from `hardening.scheduleEnabled`: webhooks can operate while polling is paused. The plugin revalidates the signature, refuses unmapped/disabled repositories, invalidates PR caches and synchronizes affected issues/explicit PR links through the host SDK. CI status events resolve associated PRs with a bounded read. No event assigns work unless existing execution policy does so, and `hardening.wakeupsEnabled: false` still suppresses explicit agent wakeups.
+
+Subscribe only to `issues`, `issue_comment`, `pull_request`, `pull_request_review`, `pull_request_review_comment`, `check_run`, `check_suite` and `status`, plus GitHub's automatic ping. Enable TLS verification. Configure repositories in both the plugin mapping and receiver allowlist before adding their hooks. Webhook sync does not enumerate or backfill every historical issue in a newly connected repository. PR events refresh already-linked issues; new historical issue/PR relationships still require backfill or explicit linking. Oversized target sets fail visibly and are retained for review.
+
+Accepted deliveries survive receiver restarts. GitHub does not automatically redeliver a request that never reached the receiver: inspect GitHub delivery failures and redeliver after outages. Automatic catch-up polling and historical backfill are separate rollout work; scheduled sync remains paused unless an operator explicitly enables it.
+
+SDK-only mode is applied consistently to settings, dashboards and toolbar buttons, including issue-detail sync. A board token is required only when the configured sync path actually uses board REST access.

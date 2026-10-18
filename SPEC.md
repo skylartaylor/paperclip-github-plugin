@@ -264,3 +264,12 @@ Task watchdogs MUST NOT replace GitHub Sync's scheduled/manual PR status refresh
 
 - Live write-permission probes MUST default off; read-only UI use MUST NOT issue
   intentionally invalid writes to infer token permissions.
+
+
+## Self-hosted webhook hardening
+
+- The public receiver MUST verify raw-byte HMAC before storing payloads and MUST acknowledge only after a durable queue commit. Paperclip's native webhook route MUST remain behind Access or a verification gateway.
+- The receiver MUST enforce the repository allowlist, exact method/path, body and queue bounds, durable deduplication, sequential forwarding, bounded coalescing, exponential retry and retained failure state. Distinct CI commits MUST NOT overwrite one another. Updates arriving during forwarding MUST survive completion of the older version.
+- Plugin webhook work MUST revalidate signatures, require explicit company configuration and saved mappings, retain company scope, and synchronize specific affected items without a company-wide scan. Scheduled sync may remain paused independently.
+- SDK-only synchronization MUST never display a board-token requirement in toolbars or KPI widgets. Missing settings MUST continue to fail closed.
+- Qualification MUST distinguish real GitHub delivery from synthetic signing/queue tests and must not claim historical backfill, nonempty PR/CI acceptance or missed-delivery recovery without corresponding evidence.

@@ -1,6 +1,6 @@
 {
   "name": "paperclip-github-plugin",
-  "version": "0.18.0-sky.1",
+  "version": "0.18.0-sky.2",
   "description": "Paperclip plugin for synchronizing GitHub issues into Paperclip projects.",
   "license": "Apache-2.0",
   "type": "module",
@@ -34,7 +34,7 @@
     "dev": "node ./scripts/build.mjs --watch",
     "dev:ui": "paperclip-plugin-dev-server --root . --ui-dir dist/ui --port 4177",
     "prepack": "pnpm build",
-    "test": "node --test --test-concurrency=1 tests/build-script.spec.mjs && tsx --test --test-concurrency=1 tests/git-branch-publisher.spec.ts tests/issue-interactions.spec.ts tests/issue-interactions-integration.spec.ts tests/plugin.spec.ts tests/hardening.spec.ts tests/merge-hardening.spec.ts",
+    "test": "node --test --test-concurrency=1 tests/build-script.spec.mjs && tsx --test --test-concurrency=1 tests/git-branch-publisher.spec.ts tests/issue-interactions.spec.ts tests/issue-interactions-integration.spec.ts tests/plugin.spec.ts tests/hardening.spec.ts tests/merge-hardening.spec.ts tests/webhooks.spec.ts",
     "test:e2e": "pnpm build && pnpm exec playwright install chromium && node ./scripts/e2e/run-paperclip-smoke.mjs",
     "typecheck": "tsc --noEmit",
     "verify:manual": "pnpm build && node ./scripts/e2e/manual-paperclip-verify.mjs",

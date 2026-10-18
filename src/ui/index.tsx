@@ -1,3 +1,4 @@
+import {requiresBoardAccess} from './board-access.ts';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   useHostContext,
@@ -211,7 +212,7 @@ interface SyncRunState {
   createdIssuesCount?: number;
   skippedIssuesCount?: number;
   erroredIssuesCount?: number;
-  lastRunTrigger?: 'manual' | 'schedule' | 'retry';
+  lastRunTrigger?: 'manual' | 'schedule' | 'retry' | 'webhook';
   cancelRequestedAt?: string;
   progress?: SyncProgressState;
   errorDetails?: SyncErrorDetails;
@@ -291,6 +292,7 @@ interface AgentToolAccessSummary {
 interface GitHubSyncSettings {
   hardening?: {scheduleEnabled: boolean; wakeupsEnabled: boolean};
   sdkOnlySync?: boolean;
+  webhooksEnabled?: boolean;
   mappings: RepositoryMapping[];
   syncState: SyncRunState;
   scheduleFrequencyMinutes: number;
@@ -11646,7 +11648,7 @@ export function GitHubSyncSettingsPage(): React.JSX.Element {
   const headerDescription = hasCompanyContext ? '' : 'Select a company.';
   const hasSavedToken = Boolean(form.githubTokenConfigured || showSavedTokenHint);
   const boardAccessConfigured = Boolean(form.paperclipBoardAccessConfigured);
-  const boardAccessRequired = boardAccessRequirement.required && settings.data?.sdkOnlySync !== true;
+  const boardAccessRequired = requiresBoardAccess(boardAccessRequirement.required, settings.data);
   const boardAccessSettingsVisible = boardAccessRequirement.settingsVisible;
   const boardAccessReady = !boardAccessRequired || (hasCompanyContext && boardAccessConfigured);
   const tokenStatus = tokenStatusOverride ?? (hasSavedToken ? 'valid' : 'required');
@@ -11832,7 +11834,7 @@ export function GitHubSyncSettingsPage(): React.JSX.Element {
   const showTokenForm = tokenStatus !== 'valid' || showTokenEditor;
   const lastUpdated = formatDate(form.updatedAt ?? currentSettings?.updatedAt, 'Not saved yet');
   const lastSync = formatDate(displaySyncState.checkedAt, 'Never');
-  const scheduleDescription = settings.data?.hardening?.scheduleEnabled === false ? 'Automatic sync paused; manual sync is available.' : formatScheduleFrequency(scheduleFrequencyMinutes);
+  const scheduleDescription = settings.data?.hardening?.scheduleEnabled === false ? (settings.data?.webhooksEnabled ? 'Polling paused; signed webhooks active.' : 'Automatic sync paused; manual sync is available.') : formatScheduleFrequency(scheduleFrequencyMinutes);
   const syncProgress = getRunningSyncProgressModel(displaySyncState);
   const syncMetricCards = getSyncMetricCards({
     totalSyncedIssuesCount: currentSettings?.totalSyncedIssuesCount ?? form.totalSyncedIssuesCount,
@@ -13458,7 +13460,7 @@ export function GitHubSyncDashboardWidget(): React.JSX.Element {
   const tokenValid = Boolean(current.githubTokenConfigured);
   const hasCompanyContext = Boolean(hostContext.companyId);
   const boardAccessConfigured = Boolean(current.paperclipBoardAccessConfigured);
-  const boardAccessRequired = boardAccessRequirement.required && current.sdkOnlySync !== true;
+  const boardAccessRequired = requiresBoardAccess(boardAccessRequirement.required, current);
   const boardAccessReady = !boardAccessRequired || (hasCompanyContext && boardAccessConfigured);
   const savedMappingCount = getComparableMappings(current.mappings ?? []).length;
   const syncSetupIssue = getSyncSetupIssue({
@@ -13480,7 +13482,7 @@ export function GitHubSyncDashboardWidget(): React.JSX.Element {
   const syncInFlight = syncStartPending || syncPersistedRunning;
   const cancellationRequested = syncPersistedRunning && (cancellingSync || isSyncCancellationRequested(displaySyncState));
   const scheduleFrequencyMinutes = normalizeScheduleFrequencyMinutes(current.scheduleFrequencyMinutes);
-  const scheduleDescription = current.hardening?.scheduleEnabled === false ? 'Automatic sync paused; manual sync is available.' : formatScheduleFrequency(scheduleFrequencyMinutes);
+  const scheduleDescription = current.hardening?.scheduleEnabled === false ? (current.webhooksEnabled ? 'Polling paused; signed webhooks active.' : 'Automatic sync paused; manual sync is available.') : formatScheduleFrequency(scheduleFrequencyMinutes);
   const summary = getDashboardSummary({
     syncIssue: syncSetupIssue,
     hasCompanyContext,
@@ -13823,7 +13825,7 @@ export function GitHubSyncKpiDashboardWidget(): React.JSX.Element {
   const hasCompanyContext = Boolean(hostContext.companyId);
   const showInitialKpiLoadingState = hasCompanyContext && dashboardMetrics.loading && !dashboardMetrics.data && !cachedDashboardMetrics;
   const boardAccessConfigured = Boolean(current.paperclipBoardAccessConfigured);
-  const boardAccessRequired = boardAccessRequirement.required;
+  const boardAccessRequired = requiresBoardAccess(boardAccessRequirement.required, current);
   const boardAccessReady = !boardAccessRequired || (hasCompanyContext && boardAccessConfigured);
   const savedMappingCount = getComparableMappings(current.mappings ?? []).length;
   const syncSetupIssue = getSyncSetupIssue({
@@ -13839,7 +13841,7 @@ export function GitHubSyncKpiDashboardWidget(): React.JSX.Element {
     hasBoardAccess: boardAccessReady
   });
   const syncPersistedRunning = displaySyncState.status === 'running';
-  const scheduleDescription = formatScheduleFrequency(normalizeScheduleFrequencyMinutes(current.scheduleFrequencyMinutes));
+  const scheduleDescription = current.hardening?.scheduleEnabled === false ? (current.webhooksEnabled ? 'Polling paused; signed webhooks active.' : 'Automatic sync paused; manual sync is available.') : formatScheduleFrequency(normalizeScheduleFrequencyMinutes(current.scheduleFrequencyMinutes));
   const kpiSummary = getKpiDashboardSummary({
     hasCompanyContext,
     metrics: currentDashboardMetrics,
@@ -14503,7 +14505,7 @@ function useGitHubSyncButtonController(props: {
   const hasCompanyContext = Boolean(props.companyId);
   const boardAccessConfigured = Boolean(settingsRegistration.data?.paperclipBoardAccessConfigured);
   const boardAccessSetupIssue: SyncConfigurationIssue | null =
-    state.canRun && boardAccessRequirement.required && (!hasCompanyContext || !boardAccessConfigured)
+    state.canRun && requiresBoardAccess(boardAccessRequirement.required, settingsRegistration.data) && (!hasCompanyContext || !boardAccessConfigured)
       ? 'missing_board_access'
       : null;
   const effectiveCanRun = state.canRun && !boardAccessSetupIssue;

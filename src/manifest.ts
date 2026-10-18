@@ -65,6 +65,7 @@ export const manifest: PaperclipPluginManifestV1 = {
     'issue.comments.create',
     'agents.read',
     'jobs.schedule',
+    'webhooks.receive',
     'api.routes.register',
     'http.outbound',
     'secrets.read-ref',
@@ -73,6 +74,12 @@ export const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema: {
     type: 'object',
     properties: {
+      webhooks: {
+        type: 'object', additionalProperties: false, properties: {
+          enabled: {type: 'boolean', default: false},
+          secretFile: {type: 'string', description: 'Operator-owned local signing-secret file; never put the secret in config.'}
+        }
+      },
       hardening: {
         type: 'object', title: 'Pilot safety controls', additionalProperties: false,
         properties: {
@@ -102,6 +109,7 @@ export const manifest: PaperclipPluginManifestV1 = {
       }
     }
   },
+  webhooks: [{endpointKey: 'github', displayName: 'Signed GitHub events'}],
   jobs: [
     {
       jobKey: 'sync.github-issues',

@@ -86,11 +86,14 @@ const uiBuildOptions = {
   jsx: 'automatic'
 };
 
+const receiverBuildOptions = {...nodeSharedOptions, entryPoints:[resolve(packageRoot,'src/webhook-receiver.ts')], outfile:resolve(outdir,'webhook-receiver.js'), target:'node24'};
+
 if (watch) {
   const buildContexts = await Promise.all([
     context(manifestBuildOptions),
     context(workerBuildOptions),
-    context(uiBuildOptions)
+    context(uiBuildOptions),
+    context(receiverBuildOptions)
   ]);
 
   const shutdown = async () => {
@@ -106,12 +109,13 @@ if (watch) {
   });
 
   await Promise.all(buildContexts.map(async (buildContext) => buildContext.watch()));
-  console.log('[paperclip-github-plugin] watch mode enabled for manifest, worker, and ui');
+  console.log('[paperclip-github-plugin] watch mode enabled for manifest, worker, ui, and webhook receiver');
 } else {
   await Promise.all([
     build(manifestBuildOptions),
     build(workerBuildOptions),
-    build(uiBuildOptions)
+    build(uiBuildOptions),
+    build(receiverBuildOptions)
   ]);
 
   console.log('[paperclip-github-plugin] build complete');

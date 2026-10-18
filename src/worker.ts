@@ -1,3 +1,4 @@
+import {verifyWebhook, webhookSubject} from './webhook-contract.ts';
 import { hardeningPolicy, assertHumanAction, assertCoordinator, requireHeadSha } from './hardening-policy.ts';
 import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
@@ -233,7 +234,7 @@ interface GitHubOctokitLogContext {
   logFailures?: boolean;
   operation?: string;
   repositoryUrl?: string;
-  syncTrigger?: 'manual' | 'schedule' | 'retry';
+  syncTrigger?: 'manual' | 'schedule' | 'retry' | 'webhook';
   toolName?: string;
 }
 
@@ -358,7 +359,7 @@ interface SyncRunState {
   createdIssuesCount?: number;
   skippedIssuesCount?: number;
   erroredIssuesCount?: number;
-  lastRunTrigger?: 'manual' | 'schedule' | 'retry';
+  lastRunTrigger?: 'manual' | 'schedule' | 'retry' | 'webhook';
   cancelRequestedAt?: string;
   progress?: SyncProgressState;
   errorDetails?: SyncErrorDetails;
@@ -614,6 +615,7 @@ interface GitHubSyncSettings {
 }
 
 interface GitHubSyncConfig {
+  webhooks?: {enabled?: boolean; secretFile?: string};
   hardening?: unknown;
   githubTokenRefs?: GitHubTokenRefs;
   githubTokenRef?: string;
@@ -2363,7 +2365,7 @@ function createIdleSyncState(): SyncRunState {
 
 function createCancelledSyncState(params: {
   message: string;
-  trigger: 'manual' | 'schedule' | 'retry';
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook';
   syncedIssuesCount: number;
   createdIssuesCount: number;
   skippedIssuesCount: number;
@@ -3650,7 +3652,7 @@ function appendRecentSyncFailureLogEntry(
 
 function createErrorSyncState(params: {
   message: string;
-  trigger: 'manual' | 'schedule' | 'retry';
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook';
   syncedIssuesCount: number;
   createdIssuesCount: number;
   skippedIssuesCount: number;
@@ -3689,7 +3691,7 @@ function createErrorSyncState(params: {
 
 function createRunningSyncState(
   previous: SyncRunState,
-  trigger: 'manual' | 'schedule' | 'retry',
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook',
   options: {
     syncedIssuesCount?: number;
     createdIssuesCount?: number;
@@ -5183,7 +5185,7 @@ async function buildProjectPullRequestPaperclipIssueData(
 
 function createSetupConfigurationErrorSyncState(
   issue: SyncConfigurationIssue,
-  trigger: 'manual' | 'schedule' | 'retry'
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook'
 ): SyncRunState {
   switch (issue) {
     case 'missing_token':
@@ -5443,7 +5445,7 @@ function buildCancelledSyncMessage(
 
 async function createUnexpectedSyncErrorResult(
   ctx: PluginSetupContext,
-  trigger: 'manual' | 'schedule' | 'retry',
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook',
   error: unknown,
   companyId?: string
 ): Promise<GitHubSyncSettings> {
@@ -5577,6 +5579,7 @@ function normalizeConfig(value: unknown): GitHubSyncConfig {
 
   return {
     ...('hardening' in record ? { hardening: record.hardening } : {}),
+    ...(isPlainRecord(record.webhooks) ? {webhooks: record.webhooks as GitHubSyncConfig['webhooks']} : {}),
     ...(githubTokenRefs ? { githubTokenRefs } : {}),
     ...(githubTokenRef ? { githubTokenRef } : {}),
     ...(githubToken ? { githubToken } : {}),
@@ -5963,7 +5966,7 @@ function normalizeSyncState(value: unknown): SyncRunState {
     ...(typeof record.createdIssuesCount === 'number' ? { createdIssuesCount: record.createdIssuesCount } : {}),
     ...(typeof record.skippedIssuesCount === 'number' ? { skippedIssuesCount: record.skippedIssuesCount } : {}),
     ...(typeof record.erroredIssuesCount === 'number' ? { erroredIssuesCount: record.erroredIssuesCount } : {}),
-    ...(lastRunTrigger === 'manual' || lastRunTrigger === 'schedule' || lastRunTrigger === 'retry'
+    ...(lastRunTrigger === 'manual' || lastRunTrigger === 'schedule' || lastRunTrigger === 'retry' || lastRunTrigger === 'webhook'
       ? { lastRunTrigger }
       : {}),
     ...(typeof record.cancelRequestedAt === 'string' ? { cancelRequestedAt: record.cancelRequestedAt } : {}),
@@ -21805,7 +21808,7 @@ async function listScheduledSyncTargets(
 
 async function performSync(
   ctx: PluginSetupContext,
-  trigger: 'manual' | 'schedule' | 'retry',
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook',
   options: {
     resolvedToken?: string;
     target?: ResolvedSyncTarget;
@@ -22864,7 +22867,7 @@ async function performSync(
 
 async function startSync(
   ctx: PluginSetupContext,
-  trigger: 'manual' | 'schedule' | 'retry',
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook',
   options: {
     awaitCompletion?: boolean;
     paperclipApiBaseUrl?: string;
@@ -22903,7 +22906,7 @@ async function startSync(
     // instead of continuing with an empty or worker-local fallback config.
     return createUnexpectedSyncErrorResult(ctx, trigger, error, targetCompanyId);
   }
-  if (trigger !== 'manual' && !hardeningPolicy(config.hardening).scheduleEnabled) {
+  if ((trigger === 'schedule' || trigger === 'retry') && !hardeningPolicy(config.hardening).scheduleEnabled) {
     return materializeScopedSettings(persistedSettings, config, targetCompanyId);
   }
   const token = await resolveGithubToken(ctx, {
@@ -24797,6 +24800,65 @@ export const __testing = {
   }
 };
 
+let webhookSerial: Promise<void> = Promise.resolve();
+
+async function handleGitHubWebhook(input: import('@paperclipai/plugin-sdk').PluginWebhookInput): Promise<void> {
+  const ctx = pluginRuntimeContext;
+  if (!ctx || input.endpointKey !== 'github') throw new Error('Webhook endpoint unavailable');
+  const header = (key: string) => typeof input.headers[key] === 'string' ? input.headers[key] as string : '';
+  const event = header('x-github-event');
+  const body = JSON.parse(input.rawBody);
+  const subject = webhookSubject(event, body);
+  const settings = normalizeSettings(await ctx.state.get(SETTINGS_SCOPE));
+  const mappings = getSyncableMappings(settings.mappings).filter(m =>
+    parseRepositoryReference(m.repositoryUrl)?.url.toLowerCase() === `https://github.com/${subject.repository}`);
+  if (mappings.length === 0) throw new Error('Repository is not mapped for webhook sync');
+  for (const mapping of mappings) {
+    const config = await getResolvedConfig(ctx, mapping.companyId, {requireCompanyScope: true});
+    if (config.webhooks?.enabled !== true || !config.webhooks.secretFile || !isAbsolute(config.webhooks.secretFile)) throw new Error('Webhook sync is not enabled');
+    const secret = (await readFile(config.webhooks.secretFile, 'utf8')).trim();
+    if (!verifyWebhook(secret, input.rawBody, header('x-hub-signature-256'))) throw new Error('Invalid webhook signature');
+    const repository = parseRepositoryReference(mapping.repositoryUrl);
+    if (!repository || !mapping.companyId || !mapping.paperclipProjectId) throw new Error('Incomplete webhook mapping');
+    invalidateProjectPullRequestCaches({companyId: mapping.companyId!, projectId: mapping.paperclipProjectId!, repository});
+    if (event === 'ping') continue;
+    const issueNumbers = new Set<number>(subject.issueNumber ? [subject.issueNumber] : []);
+    const prNumbers = new Set<number>(subject.pullRequestNumber ? [subject.pullRequestNumber] : []);
+    for (const pr of body.check_run?.pull_requests ?? body.check_suite?.pull_requests ?? []) {
+      if (Number.isSafeInteger(pr.number) && pr.number > 0) prNumbers.add(pr.number);
+    }
+    const sha = body.sha ?? body.check_run?.head_sha ?? body.check_suite?.head_sha;
+    if (!prNumbers.size && typeof sha === 'string' && /^[a-f0-9]{40}$/i.test(sha)) {
+      const client = await createGitHubToolOctokit(ctx, mapping.companyId);
+      const prs = await client.rest.repos.listPullRequestsAssociatedWithCommit({owner:repository.owner,repo:repository.repo,commit_sha:sha,per_page:26});
+      if (prs.data.length > 25) throw new Error('Commit exceeds webhook PR budget');
+      for (const pr of prs.data) prNumbers.add(pr.number);
+    }
+    if (prNumbers.size) {
+      const links = await listGitHubIssueLinkRecords(ctx);
+      for (const link of links) {
+        if (link.data.companyId !== mapping.companyId || parseRepositoryReference(link.data.repositoryUrl)?.url.toLowerCase() !== `https://github.com/${subject.repository}`) continue;
+        if (link.data.linkedPullRequestNumbers.some(n => prNumbers.has(n))) issueNumbers.add(link.data.githubIssueNumber);
+      }
+    }
+    const targets: ResolvedSyncTarget[] = [...issueNumbers].map(n => ({kind:'issue',companyId:mapping.companyId!,projectId:mapping.paperclipProjectId,repositoryUrl:repository.url,githubIssueNumber:n,githubIssueUrl:`${repository.url}/issues/${n}`,displayLabel:`webhook issue #${n}`}));
+    if (prNumbers.size) {
+      for (const link of await listGitHubPullRequestLinkRecords(ctx)) {
+        if (link.data.companyId === mapping.companyId && parseRepositoryReference(link.data.repositoryUrl)?.url.toLowerCase() === `https://github.com/${subject.repository}` && prNumbers.has(link.data.githubPullRequestNumber)) {
+          targets.push({kind:'issue',companyId:mapping.companyId!,projectId:mapping.paperclipProjectId,issueId:link.paperclipIssueId,repositoryUrl:repository.url,githubPullRequestNumber:link.data.githubPullRequestNumber,displayLabel:'webhook pull request'});
+        }
+      }
+    }
+    if (targets.length > hardeningPolicy(config.hardening).maxItemsPerSync) throw new Error('Webhook exceeds configured item budget');
+    for (const target of targets) {
+      // Never acknowledge an unrelated in-flight manual sync as this delivery's work.
+      while (activeSyncPromise) await activeSyncPromise;
+      const result = await startSync(ctx, 'webhook', {awaitCompletion:true,target});
+      if (result.syncState.status !== 'success') throw new Error('Webhook sync did not complete; retained delivery will retry');
+    }
+  }
+}
+
 const plugin = definePlugin({
   // GitHub Sync serves every company on the instance from one worker; Paperclip 2026.831 delivers
   // one company-scoped config per configured company and rejects that fan-out unless the plugin
@@ -24880,6 +24942,7 @@ const plugin = definePlugin({
         agentToolAccess,
         hardening: hardeningPolicy(config.hardening),
         sdkOnlySync: hardeningPolicy(config.hardening).sdkOnlySync,
+        webhooksEnabled: config.webhooks?.enabled === true,
         paperclipApiBaseUrlConfigured: Boolean(normalizePaperclipApiBaseUrl(config.paperclipApiBaseUrl)),
         githubTokenConfigured,
         paperclipBoardAccessConfigured: requestedCompanyId
@@ -25476,6 +25539,11 @@ const plugin = definePlugin({
         error: `Unsupported plugin API route: ${input.routeKey}.`
       }
     };
+  },
+  async onWebhook(input) {
+    const result = webhookSerial.then(() => handleGitHubWebhook(input));
+    webhookSerial = result.catch(() => undefined);
+    await result;
   },
   async onShutdown() {
     pluginRuntimeContext = null;
