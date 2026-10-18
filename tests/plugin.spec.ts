@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 import type { Agent, Project } from '@paperclipai/plugin-sdk';
-import { createTestHarness } from '@paperclipai/plugin-sdk/testing';
+import { createLegacyTestHarness as createTestHarness } from './legacy-harness.ts';
 
 import type { PublishLocalBranchInput, PublishedBranch } from '../src/git-branch-publisher.ts';
 import manifest from '../src/manifest.ts';
@@ -11164,7 +11164,7 @@ test('project.pullRequests.merge merges the selected pull request', async () => 
           ref: 'main'
         },
         head: {
-          ref: 'feature/project-pr-page'
+          ref: 'feature/project-pr-page', sha: 'a'.repeat(40)
         }
       });
     }
@@ -11208,6 +11208,7 @@ test('project.pullRequests.merge merges the selected pull request', async () => 
         return graphqlResponse({
           repository: {
             pullRequest: {
+              headRefOid: 'a'.repeat(40),
               statusCheckRollup: {
                 contexts: {
                   pageInfo: {
@@ -11230,6 +11231,7 @@ test('project.pullRequests.merge merges the selected pull request', async () => 
     }
 
     if (requestUrl.pathname === '/repos/paperclipai/example-repo/pulls/42/merge' && method === 'PUT') {
+      assert.deepEqual(getJsonRequestBody(init), { sha: 'a'.repeat(40), merge_method: 'squash' });
       return jsonResponse({
         sha: 'abc123',
         merged: true,
@@ -11247,7 +11249,7 @@ test('project.pullRequests.merge merges the selected pull request', async () => 
     }>('project.pullRequests.merge', {
       companyId: 'company-1',
       projectId: 'project-1',
-      pullRequestNumber: 42
+      pullRequestNumber: 42, expectedHeadSha: 'a'.repeat(40)
     });
 
     assert.equal(result.status, 'merged');
@@ -11276,7 +11278,7 @@ test('project.pullRequests.merge rejects pull requests blocked by non-default ta
           ref: 'release/1.x'
         },
         head: {
-          ref: 'feature/project-pr-page'
+          ref: 'feature/project-pr-page', sha: 'a'.repeat(40)
         }
       });
     }
@@ -11326,6 +11328,7 @@ test('project.pullRequests.merge rejects pull requests blocked by non-default ta
         return graphqlResponse({
           repository: {
             pullRequest: {
+              headRefOid: 'a'.repeat(40),
               statusCheckRollup: {
                 contexts: {
                   pageInfo: {
@@ -11364,7 +11367,7 @@ test('project.pullRequests.merge rejects pull requests blocked by non-default ta
       harness.performAction('project.pullRequests.merge', {
         companyId: 'company-1',
         projectId: 'project-1',
-        pullRequestNumber: 42
+        pullRequestNumber: 42, expectedHeadSha: 'a'.repeat(40)
       }),
       /not mergeable yet/i
     );
@@ -11393,7 +11396,7 @@ test('project.pullRequests.merge explains when the default branch cannot be dete
           ref: 'main'
         },
         head: {
-          ref: 'feature/project-pr-page'
+          ref: 'feature/project-pr-page', sha: 'a'.repeat(40)
         }
       });
     }
@@ -11437,6 +11440,7 @@ test('project.pullRequests.merge explains when the default branch cannot be dete
         return graphqlResponse({
           repository: {
             pullRequest: {
+              headRefOid: 'a'.repeat(40),
               statusCheckRollup: {
                 contexts: {
                   pageInfo: {
@@ -11475,7 +11479,7 @@ test('project.pullRequests.merge explains when the default branch cannot be dete
       harness.performAction('project.pullRequests.merge', {
         companyId: 'company-1',
         projectId: 'project-1',
-        pullRequestNumber: 42
+        pullRequestNumber: 42, expectedHeadSha: 'a'.repeat(40)
       }),
       /could not determine the repository default branch/i
     );
@@ -31202,6 +31206,7 @@ test('scheduled sync records the scope-denied operator message for a company the
     // trusted again and the scheduled sync proceeds.
     await worker.definition.onConfigChanged?.(
       {
+        hardening: { scheduleEnabled: true, sdkOnlySync: false, maxItemsPerSync: 1000 },
         githubTokenRefs: {
           [companyId]: { type: 'secret_ref', secretId: 'github-secret-ref-scope-denied' }
         }

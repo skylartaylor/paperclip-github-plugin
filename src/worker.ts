@@ -1,3 +1,4 @@
+import { hardeningPolicy, assertHumanAction, assertCoordinator, requireHeadSha } from './hardening-policy.ts';
 import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
@@ -613,6 +614,7 @@ interface GitHubSyncSettings {
 }
 
 interface GitHubSyncConfig {
+  hardening?: unknown;
   githubTokenRefs?: GitHubTokenRefs;
   githubTokenRef?: string;
   githubToken?: string;
@@ -701,6 +703,7 @@ function normalizeCompanyId(value: unknown): string | undefined {
 }
 
 function normalizeActionRecord(input: unknown, context?: PluginPerformActionContext | null): Record<string, unknown> {
+  assertHumanAction(context);
   const record = input && typeof input === 'object' ? { ...(input as Record<string, unknown>) } : {};
   const scopedCompanyId = normalizeCompanyId(context?.companyId);
 
@@ -710,6 +713,8 @@ function normalizeActionRecord(input: unknown, context?: PluginPerformActionCont
 
   return record;
 }
+
+const permissionProbeClients = new WeakSet<Octokit>();
 
 let activeSyncPromise: Promise<GitHubSyncSettings> | null = null;
 let activeRunningSyncState: GitHubSyncSettings | null = null;
@@ -1402,6 +1407,7 @@ interface GitHubProjectPullRequestsQueryResult {
         updatedAt?: string | null;
         baseRefName?: string | null;
         headRefName?: string | null;
+        headRefOid?: string | null;
         headRepositoryOwner?: {
           login?: string | null;
         } | null;
@@ -1781,6 +1787,7 @@ const GITHUB_PROJECT_PULL_REQUEST_BASE_FIELDS = `
           updatedAt
           baseRefName
           headRefName
+          headRefOid
           headRepositoryOwner {
             login
           }
@@ -5569,6 +5576,7 @@ function normalizeConfig(value: unknown): GitHubSyncConfig {
   const paperclipApiBaseUrl = normalizePaperclipApiBaseUrl(record.paperclipApiBaseUrl);
 
   return {
+    ...('hardening' in record ? { hardening: record.hardening } : {}),
     ...(githubTokenRefs ? { githubTokenRefs } : {}),
     ...(githubTokenRef ? { githubTokenRef } : {}),
     ...(githubToken ? { githubToken } : {}),
@@ -12754,6 +12762,7 @@ async function wakePaperclipIssueAssignee(
   if (!params.assigneeAgentId) {
     return false;
   }
+  if (!hardeningPolicy((await getResolvedConfig(ctx, params.companyId)).hardening).wakeupsEnabled) return false;
 
   if (ctx.issues && typeof ctx.issues.requestWakeup === 'function' && params.companyId) {
     try {
@@ -14495,6 +14504,7 @@ async function listRepositoryIssues(
     onProgress?: (progress: {
       loadedIssueCount: number;
     }) => Promise<void>;
+    maxItems?: number;
   } = {}
 ): Promise<GitHubIssueRecord[]> {
   const normalizedIssues: GitHubIssueRecord[] = [];
@@ -14514,6 +14524,7 @@ async function listRepositoryIssues(
       }
 
       normalizedIssues.push(normalizeGitHubIssueRecord(issue));
+      if (options.maxItems && normalizedIssues.length > options.maxItems) throw new Error("Repository exceeds the configured sync item limit; use a narrower pilot repository.");
     }
 
     if (options.onProgress) {
@@ -14532,6 +14543,7 @@ async function listRepositoryIssuesForSyncTarget(
   state: 'open' | 'all',
   target: ResolvedSyncTarget | undefined,
   options: {
+    maxItems?: number;
     onProgress?: (progress: {
       loadedIssueCount: number;
     }) => Promise<void>;
@@ -17321,11 +17333,13 @@ async function createGitHubToolOctokit(
     throw new Error(MISSING_GITHUB_TOKEN_SYNC_MESSAGE);
   }
 
-  return createGitHubOctokit(ctx, token, {
+  const client = createGitHubOctokit(ctx, token, {
     companyId,
     operation: 'github-api',
     ...context
   });
+  if (hardeningPolicy((await getResolvedConfig(ctx, companyId)).hardening).permissionProbesEnabled) permissionProbeClients.add(client);
+  return client;
 }
 
 async function listGitHubRepositoryOpenPullRequestNumbers(
@@ -17571,6 +17585,9 @@ async function getOrLoadGitHubRepositoryTokenCapabilityAudit(
     samplePullRequestNumber?: number;
   }
 ): Promise<GitHubRepositoryTokenCapabilityAudit> {
+  if (!permissionProbeClients.has(octokit)) {
+    return buildGitHubRepositoryTokenCapabilityAudit({repository, canComment:false, canReview:false, canClose:false, canUpdateBranch:false, canMerge:false, canRerunCi:false, missingPermissions:[], warnings:['Write permission probes are disabled; write actions remain hidden.']});
+  }
   const cacheKey = buildGitHubRepositoryTokenCapabilityAuditCacheKey(repository, options?.samplePullRequestNumber);
   const cachedAudit = getFreshCacheValue(activeGitHubRepositoryTokenCapabilityAuditCache, cacheKey);
   if (cachedAudit) {
@@ -19137,6 +19154,7 @@ async function buildProjectPullRequestSummaryRecord(
     commentsUrl: node.url,
     baseBranch: node.baseRefName ?? '',
     headBranch: node.headRefName ?? '',
+    headSha: node.headRefOid ?? statusSnapshot.headSha,
     commits: typeof node.commits?.totalCount === 'number' && node.commits.totalCount >= 0 ? Math.floor(node.commits.totalCount) : 0,
     changedFiles: typeof node.changedFiles === 'number' && node.changedFiles >= 0 ? Math.floor(node.changedFiles) : 0
   };
@@ -20769,6 +20787,7 @@ async function buildProjectPullRequestDetailData(
       commentsUrl: pullRequest.html_url,
       baseBranch: pullRequest.base.ref,
       headBranch: pullRequest.head.ref,
+      headSha: pullRequest.head.sha,
       commits: typeof pullRequest.commits === 'number' && pullRequest.commits >= 0 ? pullRequest.commits : 0,
       changedFiles:
         typeof pullRequest.changed_files === 'number' && pullRequest.changed_files >= 0
@@ -21039,6 +21058,7 @@ async function mergeProjectPullRequest(
     throw new Error('pullRequestNumber is required.');
   }
 
+  const expectedHeadSha = requireHeadSha(input.expectedHeadSha);
   const scope = await requireProjectPullRequestScope(ctx, input);
   const octokit = await createGitHubToolOctokit(ctx, scope.companyId);
   const pullRequestResponse = await octokit.rest.pulls.get({
@@ -21050,15 +21070,13 @@ async function mergeProjectPullRequest(
     }
   });
   const pullRequest = pullRequestResponse.data;
+  if (pullRequest.head.sha?.toLowerCase() !== expectedHeadSha) throw new Error("Pull request head changed; refresh and obtain approval for the new commit.");
+  invalidateProjectPullRequestCaches(scope);
   const reviewSummaryPromise =
-    getOrLoadCachedGitHubPullRequestReviewSummary(octokit, scope.repository, pullRequestNumber);
+    listGitHubPullRequestReviewSummary(octokit, scope.repository, pullRequestNumber);
   const reviewThreadSummaryPromise =
-    getOrLoadCachedGitHubPullRequestReviewThreadSummary(octokit, scope.repository, pullRequestNumber);
-  const statusSnapshotPromise = reviewThreadSummaryPromise.then((reviewThreadSummary) =>
-    getGitHubPullRequestStatusSnapshot(octokit, scope.repository, pullRequestNumber, new Map(), {
-      reviewThreadSummary
-    })
-  );
+    listDetailedPullRequestReviewThreads(octokit, scope.repository, pullRequestNumber).then(summarizeDetailedPullRequestReviewThreads);
+  const statusSnapshotPromise = getGitHubPullRequestCiSnapshot(octokit, scope.repository, pullRequestNumber);
   const defaultBranchNamePromise = getGitHubRepositoryDefaultBranchName(octokit, scope.repository);
   const [reviewSummary, reviewThreadSummary, statusSnapshot, defaultBranchName] = await Promise.all([
     reviewSummaryPromise,
@@ -21066,6 +21084,7 @@ async function mergeProjectPullRequest(
     statusSnapshotPromise,
     defaultBranchNamePromise
   ]);
+  if (statusSnapshot.headSha !== expectedHeadSha) throw new Error("CI evidence is not bound to the approved head; refresh before merging.");
   if (!defaultBranchName) {
     throw new Error(
       'Could not determine the repository default branch before merging this pull request. Retry the merge, and if it keeps failing check GitHub token permissions and connectivity.'
@@ -21097,6 +21116,8 @@ async function mergeProjectPullRequest(
     owner: scope.repository.owner,
     repo: scope.repository.repo,
     pull_number: pullRequestNumber,
+    sha: expectedHeadSha,
+    merge_method: 'squash',
     headers: {
       'X-GitHub-Api-Version': GITHUB_API_VERSION
     }
@@ -21802,7 +21823,8 @@ async function performSync(
   const token = typeof options.resolvedToken === 'string'
     ? options.resolvedToken
     : await resolveGithubToken(ctx, { companyId: targetCompanyId });
-  const paperclipApiBaseUrl = getConfiguredPaperclipApiBaseUrl(baseSettings, config, targetCompanyId);
+  const policy = hardeningPolicy(config.hardening);
+  const paperclipApiBaseUrl = policy.sdkOnlySync ? undefined : getConfiguredPaperclipApiBaseUrl(baseSettings, config, targetCompanyId);
   const mappings = getSyncableMappingsForTarget(settings.mappings, options.target);
   const externalSyncWork = options.externalSyncWork ?? await listExternalGitHubLinkSyncWork(ctx, settings.mappings, options.target);
   const externalLinkAuthMappings = buildExternalLinkAuthMappings(externalSyncWork);
@@ -21878,7 +21900,7 @@ async function performSync(
     return saveSettingsSyncState(ctx, settings, next.syncState, targetCompanyId);
   }
 
-  activePaperclipApiAuthTokensByCompanyId = await resolvePaperclipApiAuthTokens(
+  activePaperclipApiAuthTokensByCompanyId = policy.sdkOnlySync ? new Map() : await resolvePaperclipApiAuthTokens(
     ctx,
     settings,
     config,
@@ -21904,7 +21926,8 @@ async function performSync(
   const supportsPaperclipLabelMapping =
     typeof ctx.issues?.list === 'function' && typeof ctx.issues?.update === 'function';
   let currentSettings = settings;
-  let totalTrackedIssueCount = 0;
+  if (externalLinkCount > policy.maxItemsPerSync) throw new Error("External links exceed the configured sync item limit.");
+  let totalTrackedIssueCount = externalLinkCount;
   let completedTrackedIssueCount = 0;
   const completedTrackedIssueKeys = new Set<string>();
   let currentProgress: SyncProgressState | undefined =
@@ -22113,6 +22136,7 @@ async function performSync(
           shouldLoadClosedIssues ? 'all' : 'open',
           options.target,
           {
+            maxItems: policy.maxItemsPerSync,
             onProgress: async (progress) => {
               currentProgress = {
                 phase: 'preparing',
@@ -22154,6 +22178,9 @@ async function performSync(
         const trackedIssueCount =
           [...trackedIssueIds].filter((issueId) => allIssuesById.has(issueId)).length
           + pullRequestLinks.length;
+        if (totalTrackedIssueCount + trackedIssueCount > policy.maxItemsPerSync) {
+          throw new Error(`Sync exceeds the configured ${policy.maxItemsPerSync}-item limit; narrow the mapping or raise the reviewed budget.`);
+        }
         totalTrackedIssueCount += trackedIssueCount;
         syncedIssuesCount = totalTrackedIssueCount;
         currentProgress = {
@@ -22186,7 +22213,7 @@ async function performSync(
       }
     }
 
-    totalTrackedIssueCount += externalLinkCount;
+    // External links were reserved in the item budget before planning mappings.
     syncedIssuesCount = totalTrackedIssueCount;
 
     recordCompanyBacklogSnapshotsFromPlans(repositoryPlans);
@@ -22771,9 +22798,9 @@ async function performSync(
           recentFailures: buildRecentSyncFailureLogEntries(recoverableFailures)
         })
       };
-      await saveSettingsSyncState(ctx, currentSettings, next.syncState, targetCompanyId);
+      const savedError = await saveSettingsSyncState(ctx, currentSettings, next.syncState, targetCompanyId);
       await ctx.state.set(IMPORT_REGISTRY_SCOPE, nextRegistry);
-      return materializeScopedSettings(next, config, targetCompanyId);
+      return savedError;
     }
 
     const nextSyncState = {
@@ -22827,9 +22854,9 @@ async function performSync(
         )
       })
     };
-    await saveSettingsSyncState(ctx, currentSettings, next.syncState, targetCompanyId);
+    const savedError = await saveSettingsSyncState(ctx, currentSettings, next.syncState, targetCompanyId);
     await ctx.state.set(IMPORT_REGISTRY_SCOPE, nextRegistry);
-    return materializeScopedSettings(next, config, targetCompanyId);
+    return savedError;
   } finally {
     await flushCompanyKpiState();
   }
@@ -22875,6 +22902,9 @@ async function startSync(
     // company has no saved GitHub Sync plugin config. Record the operator-facing sync error
     // instead of continuing with an empty or worker-local fallback config.
     return createUnexpectedSyncErrorResult(ctx, trigger, error, targetCompanyId);
+  }
+  if (trigger !== 'manual' && !hardeningPolicy(config.hardening).scheduleEnabled) {
+    return materializeScopedSettings(persistedSettings, config, targetCompanyId);
   }
   const token = await resolveGithubToken(ctx, {
     companyId: targetCompanyId,
@@ -23243,6 +23273,7 @@ async function executeTrackedGitHubMutation(
   fn: () => Promise<ToolResult>
 ): Promise<ToolResult> {
   return executeGitHubTool(async () => {
+    assertCoordinator(hardeningPolicy((await getResolvedConfig(ctx, runCtx.companyId)).hardening), runCtx.agentId);
     const input = getToolInputRecord(params);
     const paperclipIssueId = normalizeOptionalToolString(input.paperclipIssueId);
     if (paperclipIssueId && !await ctx.issues.get(paperclipIssueId, runCtx.companyId)) {
@@ -24722,6 +24753,8 @@ export function shouldStartWorkerHost(moduleUrl: string, entry = process.argv[1]
 }
 
 export const __testing = {
+  cacheGitHubPullRequestReviewSummary,
+  cacheGitHubPullRequestReviewThreadSummary,
   listIssueInteractionEvents,
   isLiveGitHubIssueLinkRecord,
   buildExternalPullRequestStateHash,
@@ -24845,6 +24878,8 @@ const plugin = definePlugin({
         ...(includeAssignees ? { availableAssignees } : {}),
         totalSyncedIssuesCount: countImportedIssuesForMappings(importRegistry, scopedMappings),
         agentToolAccess,
+        hardening: hardeningPolicy(config.hardening),
+        sdkOnlySync: hardeningPolicy(config.hardening).sdkOnlySync,
         paperclipApiBaseUrlConfigured: Boolean(normalizePaperclipApiBaseUrl(config.paperclipApiBaseUrl)),
         githubTokenConfigured,
         paperclipBoardAccessConfigured: requestedCompanyId
@@ -25355,7 +25390,8 @@ const plugin = definePlugin({
       });
     });
 
-    ctx.actions.register('sync.cancel', async () => {
+    ctx.actions.register('sync.cancel', async (input, actionContext) => {
+      normalizeActionRecord(input, actionContext);
       const persistedRunningSyncCompanyId =
         activeRunningSyncState?.syncState.status === 'running'
           ? activeRunningSyncCompanyId

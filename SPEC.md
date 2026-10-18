@@ -245,3 +245,22 @@ Paperclip 2026.831 makes plugin config company-scoped, re-enables plugin secret 
 The boundaries adopted with Paperclip 2026.626 still apply. Paperclip 2026.626 external object references, task watchdogs, ask work mode, routine date variables, and built-in Hermes adapters are host/runtime capabilities. GitHub Sync MUST NOT declare a duplicate GitHub `external.objects.*` provider while the host ships a built-in GitHub external-object provider. Because that host provider now supersedes the plugin's generic comment-link rendering, GitHub Sync MUST NOT declare the legacy `commentAnnotation` UI slot for GitHub links. Synced descriptions, comments, and status-transition annotations SHOULD continue to include canonical GitHub issue and pull request URLs so the host provider can detect them, but GitHub Sync's mappings, plugin entities, sync jobs, and agent tools remain authoritative for routing mapped/linked Paperclip issue state.
 
 Task watchdogs MUST NOT replace GitHub Sync's scheduled/manual PR status refresh. GitHub Sync MUST NOT create, read, update, delete, or auto-attach `/api/issues/:id/watchdog` configuration, and MUST NOT pass a `watchdog` field when importing or creating GitHub-backed Paperclip issues. Waiting on GitHub CI, mergeability, review threads, or maintainer approval is an external GitHub wait, not a stopped Paperclip task tree. GitHub Sync MAY coexist with operator-created task watchdogs, and its normal issue comments/status transitions SHOULD remain visible to host watchdog reconciliation. However, GitHub Sync MUST continue to drive issue status from GitHub snapshots and MUST NOT treat watchdog review issues as the source of truth for PR state. GitHub Sync tools are normal company-scoped plugin tools, not currently task-watchdog-scope-aware; a future host/plugin contract is required before mutating GitHub tools can enforce watched-subtree scope.
+
+## Hardened pilot contract
+
+- UI actions MUST reject absent, system, and agent actor contexts; only an
+  authenticated human with a host-supplied user id may invoke them.
+- Agent write tools MUST match the coordinator id from trusted company plugin
+  config, in addition to the host tool gateway's normal authorization.
+- Scheduled/retry sync and explicit agent wakeups MUST default off and be
+  independently operator-controlled. Manual sync MUST remain available.
+- Oversized sync batches MUST stop rather than silently skipping imported data.
+- SDK-only sync MUST avoid resolving a human board token or using the REST
+  fallback and MUST advertise its mode to the UI.
+- Merges MUST require the displayed head SHA, read fresh review/thread/CI facts,
+  reject different-head CI, and send the exact SHA with the chosen squash method.
+- Scoped sync errors MUST return the persisted terminal error, never stale
+  company-scoped running state.
+
+- Live write-permission probes MUST default off; read-only UI use MUST NOT issue
+  intentionally invalid writes to infer token permissions.

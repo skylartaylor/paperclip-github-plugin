@@ -289,6 +289,8 @@ interface AgentToolAccessSummary {
 }
 
 interface GitHubSyncSettings {
+  hardening?: {scheduleEnabled: boolean; wakeupsEnabled: boolean};
+  sdkOnlySync?: boolean;
   mappings: RepositoryMapping[];
   syncState: SyncRunState;
   scheduleFrequencyMinutes: number;
@@ -494,6 +496,7 @@ interface GitHubTokenPermissionAuditSummary {
 }
 
 interface PreviewPullRequestRecord {
+  headSha?: string;
   id: string;
   number: number;
   title: string;
@@ -9216,7 +9219,8 @@ export function GitHubSyncProjectPullRequestsPage(): React.JSX.Element {
         companyId: hostContext.companyId,
         projectId,
         repositoryUrl: pageData.repositoryUrl,
-        pullRequestNumber: pullRequest.number
+        pullRequestNumber: pullRequest.number,
+        expectedHeadSha: pullRequest.headSha
       });
       toast({
         title: `Merged #${pullRequest.number}`,
@@ -11642,7 +11646,7 @@ export function GitHubSyncSettingsPage(): React.JSX.Element {
   const headerDescription = hasCompanyContext ? '' : 'Select a company.';
   const hasSavedToken = Boolean(form.githubTokenConfigured || showSavedTokenHint);
   const boardAccessConfigured = Boolean(form.paperclipBoardAccessConfigured);
-  const boardAccessRequired = boardAccessRequirement.required;
+  const boardAccessRequired = boardAccessRequirement.required && settings.data?.sdkOnlySync !== true;
   const boardAccessSettingsVisible = boardAccessRequirement.settingsVisible;
   const boardAccessReady = !boardAccessRequired || (hasCompanyContext && boardAccessConfigured);
   const tokenStatus = tokenStatusOverride ?? (hasSavedToken ? 'valid' : 'required');
@@ -11828,7 +11832,7 @@ export function GitHubSyncSettingsPage(): React.JSX.Element {
   const showTokenForm = tokenStatus !== 'valid' || showTokenEditor;
   const lastUpdated = formatDate(form.updatedAt ?? currentSettings?.updatedAt, 'Not saved yet');
   const lastSync = formatDate(displaySyncState.checkedAt, 'Never');
-  const scheduleDescription = formatScheduleFrequency(scheduleFrequencyMinutes);
+  const scheduleDescription = settings.data?.hardening?.scheduleEnabled === false ? 'Automatic sync paused; manual sync is available.' : formatScheduleFrequency(scheduleFrequencyMinutes);
   const syncProgress = getRunningSyncProgressModel(displaySyncState);
   const syncMetricCards = getSyncMetricCards({
     totalSyncedIssuesCount: currentSettings?.totalSyncedIssuesCount ?? form.totalSyncedIssuesCount,
@@ -13454,7 +13458,7 @@ export function GitHubSyncDashboardWidget(): React.JSX.Element {
   const tokenValid = Boolean(current.githubTokenConfigured);
   const hasCompanyContext = Boolean(hostContext.companyId);
   const boardAccessConfigured = Boolean(current.paperclipBoardAccessConfigured);
-  const boardAccessRequired = boardAccessRequirement.required;
+  const boardAccessRequired = boardAccessRequirement.required && current.sdkOnlySync !== true;
   const boardAccessReady = !boardAccessRequired || (hasCompanyContext && boardAccessConfigured);
   const savedMappingCount = getComparableMappings(current.mappings ?? []).length;
   const syncSetupIssue = getSyncSetupIssue({
@@ -13476,7 +13480,7 @@ export function GitHubSyncDashboardWidget(): React.JSX.Element {
   const syncInFlight = syncStartPending || syncPersistedRunning;
   const cancellationRequested = syncPersistedRunning && (cancellingSync || isSyncCancellationRequested(displaySyncState));
   const scheduleFrequencyMinutes = normalizeScheduleFrequencyMinutes(current.scheduleFrequencyMinutes);
-  const scheduleDescription = formatScheduleFrequency(scheduleFrequencyMinutes);
+  const scheduleDescription = current.hardening?.scheduleEnabled === false ? 'Automatic sync paused; manual sync is available.' : formatScheduleFrequency(scheduleFrequencyMinutes);
   const summary = getDashboardSummary({
     syncIssue: syncSetupIssue,
     hasCompanyContext,

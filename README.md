@@ -561,3 +561,58 @@ If you want the seeded `CEO` agent used in manual verification to opt into Codex
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
+
+## Hardened self-hosted pilot fork
+
+This fork adds an authenticated-human boundary to every UI action. Agents must
+use their authorized plugin tools; mutating tools additionally require their
+actual run agent id to match the operator-configured coordinator. A user-supplied
+`actor` or policy in action arguments cannot grant authority.
+
+Set these values in the company's **plugin configuration**, not action params:
+
+```json
+{
+  "hardening": {
+    "scheduleEnabled": false,
+    "permissionProbesEnabled": false,
+    "wakeupsEnabled": false,
+    "sdkOnlySync": true,
+    "maxItemsPerSync": 25
+  }
+}
+```
+
+Write-permission probes send intentionally invalid write requests upstream; they
+are disabled by default (`permissionProbesEnabled: false`) for this pilot.
+
+These are the defaults. Omitting `coordinatorAgentId` denies all agent GitHub
+writes. Set it only after qualifying that agent and its tool-access profile.
+Human UI writes still require the GitHub token's own permissions. For the first
+pilot, use a read-only fine-grained token for one repository and leave the host
+`GITHUB_TOKEN` mirroring option off. The worker keeps the credential; it does not
+inject it into agent environments. This is a Paperclip authorization boundary,
+not OS isolation from arbitrary code running under the same Unix account.
+
+`scheduleEnabled` gates scheduled and retry jobs; it does not block a human's
+manual sync. `wakeupsEnabled` separately blocks the plugin's explicit agent
+wake requests. The default item budget stops oversized repository enumeration
+before importing it; it does not silently truncate and mark omitted data synced.
+SDK-only sync uses the host SDK rather than a human board token or local REST
+fallback. Label creation and user-assignment features needing that fallback can
+be unavailable; existing SDK features continue to work.
+
+Merge actions require `expectedHeadSha` from the displayed PR, re-fetch review,
+thread and CI state, reject CI for another head, and send that exact SHA to
+GitHub with squash merge selected. Missing/stale heads fail without a merge.
+The inherited default-branch and outside-approval requirements remain in place.
+A model's recommendation or a tool-access profile is not human publication
+approval. Follow each repository's approval and commit-title rules.
+
+Webhooks are a follow-up transport, not included in this pilot package. Use a
+short, measured polling interval only after the manual pilot passes. A future
+receiver should authenticate raw bytes with HMAC-SHA256, bind repository id and
+company, persist/deduplicate delivery ids, combine event bursts, acknowledge
+quickly, and re-fetch authoritative GitHub state. Keep the Paperclip app behind
+Access; expose only the signed receiver route. Retain slower reconciliation for
+missed/out-of-order deliveries and respect Retry-After/rate-limit reset headers.

@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
 
-import { createTestHarness } from '@paperclipai/plugin-sdk/testing';
+import { createLegacyTestHarness as createTestHarness } from './legacy-harness.ts';
 
 import manifest from '../src/manifest.ts';
 import plugin, { __testing } from '../src/worker.ts';
@@ -183,7 +183,8 @@ test('get_issue_interaction_summary enforces issue company scope and returns com
   assert.match(crossCompany.error ?? '', /not found/i);
 });
 
-test('issue-scoped mutating tool failures append a sanitized attributed ledger event', async () => {
+test('issue-scoped mutating tool failures append a sanitized attributed ledger event', async (t) => {
+  t.mock.timers.enable({apis:['Date'],now:Date.now()});
   const harness = createTestHarness({ manifest });
   harness.seed({
     issues: [{
@@ -233,6 +234,7 @@ test('issue-scoped mutating tool failures append a sanitized attributed ledger e
   assert.match(serialized, new RegExp(`"runId":"${longRunId}"`));
   assert.doesNotMatch(serialized, /raw body|headers|token|error/i);
 
+  t.mock.timers.tick(1);
   const to = new Date().toISOString();
   const from = new Date(Date.parse(to) - 24 * 60 * 60 * 1000).toISOString();
   const summaryResult = await harness.executeTool('get_issue_interaction_summary', {

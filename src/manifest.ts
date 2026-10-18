@@ -73,6 +73,17 @@ export const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema: {
     type: 'object',
     properties: {
+      hardening: {
+        type: 'object', title: 'Pilot safety controls', additionalProperties: false,
+        properties: {
+          scheduleEnabled: { type: 'boolean', default: false },
+          permissionProbesEnabled: { type: 'boolean', default: false },
+          wakeupsEnabled: { type: 'boolean', default: false },
+          sdkOnlySync: { type: 'boolean', default: true },
+          maxItemsPerSync: { type: 'integer', minimum: 1, maximum: 1000, default: 25 },
+          coordinatorAgentId: { type: 'string' }
+        }
+      },
       githubTokenRefs: {
         type: 'object',
         title: 'GitHub Token Secrets',
