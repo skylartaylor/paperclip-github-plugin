@@ -5,6 +5,17 @@ import manifest from '../src/manifest.ts';
 import {hardeningPolicy, assertCoordinator, assertHumanAction, requireHeadSha} from '../src/hardening-policy.ts';
 const human={companyId:'company-1',actor:{type:'user' as const,userId:'operator',companyId:'company-1'}};
 let serial=0;
+test('host configuration schema admits every hardening policy control',()=>{
+ const schema=manifest.instanceConfigSchema as {properties:{hardening:{additionalProperties:boolean;properties:Record<string,{type:string;default?:unknown}>}}};
+ const hardening=schema.properties.hardening;
+ assert.equal(hardening.additionalProperties,false);
+ for(const [key,value] of Object.entries(hardeningPolicy(undefined))) {
+  assert.ok(key in hardening.properties,`Host config validation must admit ${key}`);
+  assert.equal(hardening.properties[key].default,value);
+ }
+ assert.equal(hardening.properties.incrementalPollingEnabled.type,'boolean');
+ assert.equal(hardeningPolicy({incrementalPollingEnabled:true}).incrementalPollingEnabled,true);
+});
 async function setup(hardening:unknown={}) {
  const module=await import(`../src/worker.ts?hardening=${++serial}`);
  const h=createTestHarness({manifest,config:{githubToken:'synthetic-token',hardening}});

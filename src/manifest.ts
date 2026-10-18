@@ -83,6 +83,7 @@ export const manifest: PaperclipPluginManifestV1 = {
       hardening: {
         type: 'object', title: 'Pilot safety controls', additionalProperties: false,
         properties: {
+          incrementalPollingEnabled: { type: 'boolean', default: false },
           scheduleEnabled: { type: 'boolean', default: false },
           permissionProbesEnabled: { type: 'boolean', default: false },
           wakeupsEnabled: { type: 'boolean', default: false },
