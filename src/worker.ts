@@ -9117,6 +9117,7 @@ function resolvePaperclipIssueStatus(params: {
   defaultImportedStatus: PaperclipIssueStatus;
   maintainerAuthoredImportedIssue?: boolean;
   hasExecutorHandoffTarget?: boolean;
+  preserveImportedBacklog?: boolean;
 }): PaperclipIssueStatus {
   const {
     currentStatus,
@@ -9136,7 +9137,7 @@ function resolvePaperclipIssueStatus(params: {
   // Backlog is manual-only for open issues after the initial import. A real
   // Paperclip host can create fresh issues in backlog, so first-sync status
   // mapping still needs to run for newly imported issues.
-  if (currentStatus === 'backlog' && !wasImportedThisRun) {
+  if (currentStatus === 'backlog' && (!wasImportedThisRun || (params.preserveImportedBacklog && defaultImportedStatus === 'backlog'))) {
     return 'backlog';
   }
 
@@ -13305,11 +13306,27 @@ function logIssueDescriptionVerificationFailure(
   );
 }
 
+type NativeLabelClient = PluginSetupContext['issues'] & {
+  listLabels?: (companyId:string)=>Promise<PaperclipIssueLabel[]>;
+  ensureLabel?: (input:{companyId:string;name:string;color:string})=>Promise<PaperclipIssueLabel>;
+};
+const labelPairingScope = (companyId:string) => ({scopeKind:'company' as const,scopeId:companyId,stateKey:'github.label-pairings.v1'});
+function readLabelPairings(value:unknown):Array<{name:string;labelId:string}> {
+  if(!Array.isArray(value)) return [];
+  return value.filter((v):v is {name:string;labelId:string}=>Boolean(v && typeof v==='object' && typeof v.name==='string' && typeof v.labelId==='string'));
+}
+
 async function listPaperclipLabelsViaApi(
   ctx: PluginSetupContext,
   companyId: string,
   paperclipApiBaseUrl?: string
 ): Promise<PaperclipLabelLookupResult> {
+  const native = ctx.issues as NativeLabelClient;
+  if (typeof native.listLabels === 'function') {
+    const directory: PaperclipLabelDirectory = new Map();
+    for(const label of await native.listLabels(companyId)) addPaperclipLabelToDirectory(directory,label);
+    return {directory};
+  }
   if (!paperclipApiBaseUrl) {
     return {
       directory: null
@@ -13435,6 +13452,10 @@ async function createPaperclipLabelViaApi(
   githubLabel: GitHubIssueLabelRecord,
   paperclipApiBaseUrl?: string
 ): Promise<PaperclipLabelCreationAttempt> {
+  const native = ctx.issues as NativeLabelClient;
+  if (typeof native.ensureLabel === 'function') {
+    return {label:await native.ensureLabel({companyId,name:githubLabel.name,color:normalizeHexColor(githubLabel.color) ?? DEFAULT_PAPERCLIP_LABEL_COLOR})};
+  }
   if (!paperclipApiBaseUrl) {
     return {
       label: null
@@ -13504,6 +13525,14 @@ async function ensurePaperclipLabelForGitHubLabel(
   directory: PaperclipLabelDirectory,
   paperclipApiBaseUrl?: string
 ): Promise<ResolvedPaperclipLabelResult> {
+  const pairing = readLabelPairings(await ctx.state.get(labelPairingScope(companyId))).find(p=>p.name===githubLabel.name.trim().toLowerCase());
+  if(pairing) {
+    const refreshed = await listPaperclipLabelsViaApi(ctx,companyId,paperclipApiBaseUrl);
+    if(refreshed.directory) mergePaperclipLabelDirectories(directory,refreshed.directory);
+    const target=[...directory.values()].flat().find(label=>label.id===pairing.labelId && label.companyId===companyId);
+    if(!target) throw new Error('A paired Paperclip label is no longer available; update the label pairing');
+    return {label:target};
+  }
   const matchedBeforeCreate = selectPaperclipLabelForGitHubLabel(githubLabel, directory);
   if (matchedBeforeCreate) {
     return {
@@ -13663,6 +13692,11 @@ async function synchronizePaperclipIssueLabels(
   );
 
   if (labelResolution.unresolvedGitHubLabels.length > 0) {
+    if (!paperclipApiBaseUrl && hardeningPolicy((await getResolvedConfig(ctx, companyId)).hardening).sdkOnlySync) {
+      // The SDK can attach existing labels but cannot create native labels. Keep
+      // the complete GitHub label set in the link entity; preserve native labels.
+      return false;
+    }
     throw new PaperclipLabelSyncError({
       labelNames: labelResolution.unresolvedGitHubLabels.map((label) => label.name),
       paperclipApiBaseUrl,
@@ -14766,7 +14800,10 @@ async function createPaperclipIssue(
     availableLabels,
     paperclipApiBaseUrl
   );
-  await applyPaperclipLabelsToIssue(
+  const deferNativeLabels = labelResolution.unresolvedGitHubLabels.length > 0
+    && !paperclipApiBaseUrl
+    && hardeningPolicy((await getResolvedConfig(ctx, mapping.companyId)).hardening).sdkOnlySync;
+  if (!deferNativeLabels) await applyPaperclipLabelsToIssue(
     ctx,
     mapping.companyId,
     ensuredCreatedIssueId,
@@ -14775,7 +14812,7 @@ async function createPaperclipIssue(
 
   return {
     id: ensuredCreatedIssueId,
-    unresolvedGitHubLabels: labelResolution.unresolvedGitHubLabels,
+    unresolvedGitHubLabels: deferNativeLabels ? [] : labelResolution.unresolvedGitHubLabels,
     ...(labelResolution.failure ? { labelResolutionFailure: labelResolution.failure } : {})
   };
 }
@@ -15285,6 +15322,7 @@ async function synchronizePaperclipIssueStatuses(
     };
   }
 
+  const preserveImportedBacklog = hardeningPolicy((await getResolvedConfig(ctx, mapping.companyId)).hardening).incrementalPollingEnabled;
   let updatedStatusesCount = 0;
   let updatedLabelsCount = 0;
   let updatedDescriptionsCount = 0;
@@ -15497,7 +15535,7 @@ async function synchronizePaperclipIssueStatuses(
         mapping.companyId,
         effectiveGate?.ownerCandidate
       );
-      const transitionFollowThroughAssigneeAgentId = isActionableDirectPullRequestGate(effectiveGate)
+      const transitionFollowThroughAssigneeAgentId = !preserveImportedBacklog && isActionableDirectPullRequestGate(effectiveGate)
         ? followThroughAssigneeAgentId
         : undefined;
       const remoteActionFingerprint = createHash('sha256').update(JSON.stringify({
@@ -15566,7 +15604,8 @@ async function synchronizePaperclipIssueStatuses(
         wasImportedThisRun: isPendingInitialActivation,
         defaultImportedStatus: advancedSettings.defaultStatus,
         maintainerAuthoredImportedIssue,
-        hasExecutorHandoffTarget: Boolean(executorTransitionAssignee)
+        hasExecutorHandoffTarget: Boolean(executorTransitionAssignee),
+        preserveImportedBacklog
       });
       if (
         paperclipIssue.status === 'blocked'
@@ -24770,6 +24809,8 @@ export function shouldStartWorkerHost(moduleUrl: string, entry = process.argv[1]
 }
 
 export const __testing = {
+  createPaperclipIssue,
+  synchronizePaperclipIssueLabels,
   runIncrementalPolling,
   syncMappedGitHubSubject,
   cacheGitHubPullRequestReviewSummary,
@@ -24961,6 +25002,33 @@ const plugin = definePlugin({
     });
   },
   async setup(ctx) {
+    ctx.data.register('labels.directory',async(input)=>{
+      const companyId=normalizeCompanyId((input as Record<string,unknown>)?.companyId);
+      if(!companyId) throw new Error('Label directory requires company scope');
+      const native=ctx.issues as NativeLabelClient;
+      if(typeof native.listLabels!=='function' || typeof native.ensureLabel!=='function') throw new Error('Native label synchronization requires the self-hosted label SDK extension');
+      const labels=await native.listLabels(companyId);
+      const pairings=readLabelPairings(await ctx.state.get(labelPairingScope(companyId)));
+      const names=new Set(pairings.map(p=>p.name));
+      for(const link of await listGitHubIssueLinkRecords(ctx)) if(link.data.companyId===companyId) for(const label of link.data.labels) names.add(label.name);
+      return {labels,pairings,githubLabels:[...names].sort((a,b)=>a.localeCompare(b))};
+    });
+    ctx.actions.register('labels.savePairing',async(input,context)=>{
+      const record=normalizeActionRecord(input,context);
+      const companyId=normalizeCompanyId(record.companyId);
+      const name=typeof record.name==='string'?record.name.trim().toLowerCase():'';
+      const labelId=typeof record.labelId==='string'?record.labelId:'';
+      if(!companyId || !name || name.length>100) throw new Error('Label pairing requires company scope and a GitHub label name');
+      const native=ctx.issues as NativeLabelClient;
+      if(typeof native.listLabels!=='function') throw new Error('Native label directory is unavailable');
+      if(labelId && !(await native.listLabels(companyId)).some(label=>label.id===labelId && label.companyId===companyId)) throw new Error('Choose an existing label in this company');
+      const work=webhookSerial.then(async()=>{
+        const pairs=readLabelPairings(await ctx.state.get(labelPairingScope(companyId))).filter(p=>p.name!==name);
+        if(labelId) pairs.push({name,labelId});
+        if(pairs.length>500) throw new Error('Label pairing limit reached');
+        await ctx.state.set(labelPairingScope(companyId),pairs);return {saved:true};
+      });webhookSerial=work.then(()=>undefined,()=>undefined);return work;
+    });
     ctx.data.register('polling.status', async(input)=>{
       const record=input && typeof input==='object'?input as Record<string,unknown>:{};
       const companyId=normalizeCompanyId(record.companyId);

@@ -665,3 +665,22 @@ replacement for every webhook event: CI-only changes or comment edits that do no
 change that metadata may require an explicit refresh. It does not automatically
 recreate every old PR relationship. Read-only polling and historical import do
 not grant agents merge, comment or issue-write permissions.
+
+### Native labels and pairing overrides (self-hosted fork)
+
+The matching self-hosted SDK extension exposes company-scoped `issues.listLabels`
+and idempotent `issues.ensureLabel` under the existing issue read/update
+capabilities. GitHub label names match existing Paperclip labels; missing labels
+are created with the GitHub color. Existing label colors/names are preserved.
+In GitHub Sync settings, **GitHub label pairings** lets a human override a name
+with an existing label in the same company, or return it to automatic matching.
+Pairings apply across that company's mapped repositories. They affect subsequent
+syncs, never mutate GitHub, and do not themselves enqueue an unbounded resync.
+Labels observed on imported issues appear automatically; other names can be added.
+A deleted or invalid paired label produces a retained sync error until corrected.
+On older hosts without label creation, SDK-only imports retain the complete label
+set in GitHub link metadata and preserve existing native labels rather than failing
+or silently applying a partial set. Deploy the SDK extension for native mirroring.
+During bounded incremental polling, fresh open Backlog imports stay in Backlog
+even when linked PRs would otherwise activate execution; closed issue status still
+syncs. Agent wakeups remain governed by the separate hardening policy.

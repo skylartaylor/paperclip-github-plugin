@@ -79,3 +79,51 @@ test('permission audit does not send intentionally invalid writes in a default p
  globalThis.fetch=async(input,init)=>{if((init?.method??'GET')!=='GET')writes++;return Response.json({default_branch:'main'});};
  try {await h.getData('settings.tokenPermissionAudit',{companyId:'company-1'});assert.equal(writes,0);}finally{globalThis.fetch=original;}
 });
+
+test('polling pilot preserves imported backlog despite linked PR execution signals',async()=>{
+ const {module}=await setup({incrementalPollingEnabled:true});
+ const input={currentStatus:'backlog' as const,snapshot:{state:'open',linkedPullRequests:[{lifecycleState:'open'}]},effectiveGate:{condition:'waiting'},wasImportedThisRun:true,defaultImportedStatus:'backlog' as const};
+ const resolve=module.__testing.resolvePaperclipIssueStatus;
+ assert.equal(resolve(input as any),'in_progress');
+ assert.equal(resolve({...input,preserveImportedBacklog:true} as any),'backlog');
+ assert.equal(resolve({...input,snapshot:{...input.snapshot,state:'closed'},preserveImportedBacklog:true} as any),'done');
+});
+
+test('SDK-only labeled imports preserve GitHub metadata without direct API or partial native-label changes',async()=>{
+ const {h,module}=await setup();let requests=0,updates=0;
+ const original=globalThis.fetch;globalThis.fetch=async()=>{requests++;throw Error('No direct API');};
+ const update=h.ctx.issues.update;h.ctx.issues.update=async(...args)=>{updates++;return update(...args);};
+ const issue={id:1,number:1,title:'Synthetic labeled issue',state:'open',htmlUrl:'https://github.com/paperclipai/example-repo/issues/1',body:'Synthetic body',labels:[{name:'enhancement',color:'00ff00'}],commentsCount:0,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+ try {
+  const result=await module.__testing.createPaperclipIssue(h.ctx,{id:'pilot',companyId:'company-1',paperclipProjectId:'project-1',paperclipProjectName:'Pilot',repositoryUrl:'https://github.com/paperclipai/example-repo'},{defaultStatus:'backlog'},issue as any,new Map(),undefined);
+  assert.deepEqual(result.unresolvedGitHubLabels,[]);
+  const records=await h.ctx.entities.list({entityType:'paperclip-github-plugin.issue-link'});
+  assert.ok(records.some((r:any)=>r.data?.labels?.some((l:any)=>l.name==='enhancement')));
+  const native=await h.ctx.issues.get(result.id,'company-1');
+  updates=0;
+  assert.equal(await module.__testing.synchronizePaperclipIssueLabels(h.ctx,'company-1',native!,issue as any,new Map(),undefined),false);
+  assert.equal(updates,0);assert.equal(requests,0);
+ } finally {globalThis.fetch=original;}
+});
+
+test('native label sync creates missing labels and honors human-only company-scoped pairings',async()=>{
+ const {h,module}=await setup();const labels=[{id:'native-bug',companyId:'company-1',name:'Defect',color:'#ff0000'}];let created=0;
+ const native=h.ctx.issues as any;
+ native.listLabels=async(companyId:string)=>labels.filter(l=>l.companyId===companyId);
+ native.ensureLabel=async(input:any)=>{created++;const label={id:`native-${created}`,...input};labels.push(label);return label;};
+ await h.performAction('labels.savePairing',{companyId:'company-1',name:'BUG',labelId:'native-bug'},human);
+ await assert.rejects(h.performAction('labels.savePairing',{companyId:'company-1',name:'bug',labelId:'other-company'},human),/existing label in this company/);
+ await assert.rejects(h.performAction('labels.savePairing',{companyId:'company-1',name:'bug',labelId:''},{companyId:'company-1',actor:{type:'agent',agentId:'worker',runId:'run',companyId:'company-1'}}),/authenticated human/);
+ const issue={id:12,number:12,title:'Synthetic paired labels',state:'open',htmlUrl:'https://github.com/paperclipai/example-repo/issues/12',body:'Synthetic body',labels:[{name:'bug',color:'ff0000'},{name:'enhancement',color:'00ff00'}],commentsCount:0,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+ const result=await module.__testing.createPaperclipIssue(h.ctx,{id:'pilot',companyId:'company-1',paperclipProjectId:'project-1',paperclipProjectName:'Pilot',repositoryUrl:'https://github.com/paperclipai/example-repo'},{defaultStatus:'backlog'},issue as any,new Map(),undefined);
+ assert.deepEqual(result.unresolvedGitHubLabels,[]);assert.equal(created,1);
+ const saved=await h.ctx.issues.get(result.id,'company-1');
+ assert.deepEqual(saved?.labelIds?.sort(),['native-1','native-bug']);
+ assert.equal(await module.__testing.synchronizePaperclipIssueLabels(h.ctx,'company-1',saved!,issue as any,new Map(),undefined),false);
+ assert.equal(created,1);
+ const directory=await h.getData('labels.directory',{companyId:'company-1'}) as any;
+ assert.ok(directory.githubLabels.includes('enhancement'));assert.deepEqual(directory.pairings,[{name:'bug',labelId:'native-bug'}]);
+ const other=await h.getData('labels.directory',{companyId:'company-2'}) as any;assert.equal(other.pairings.length,0);
+ await h.performAction('labels.savePairing',{companyId:'company-1',name:'bug',labelId:''},human);
+ assert.deepEqual((await h.getData('labels.directory',{companyId:'company-1'}) as any).pairings,[]);
+});

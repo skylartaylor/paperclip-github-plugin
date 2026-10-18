@@ -1,3 +1,4 @@
+import {LabelPairings} from './label-pairings.tsx';
 import {requiresBoardAccess} from './board-access.ts';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -12969,6 +12970,7 @@ export function GitHubSyncSettingsPage(): React.JSX.Element {
             )}
           </section>
 
+          {hostContext.companyId ? <LabelPairings key={hostContext.companyId} companyId={hostContext.companyId}/> : null}
           <section className="ghsync__section">
             <div className="ghsync__section-head">
               <div className="ghsync__section-copy">
