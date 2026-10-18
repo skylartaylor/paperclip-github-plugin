@@ -12201,7 +12201,17 @@ function resolveGitHubPullRequestLinkReference(input: {
   };
 }
 
+// One worker per installed plugin: serialize the complete check/read/persist
+// sequence across UI, assistant MCP and agent tools for this company/task.
 async function linkPaperclipIssueToGitHubIssue(
+  ctx: PluginSetupContext,
+  params: Parameters<typeof linkPaperclipIssueToGitHubIssueUnlocked>[1]
+): ReturnType<typeof linkPaperclipIssueToGitHubIssueUnlocked> {
+  return withPullRequestLinkMutationLock(`task-link:${params.companyId}:${params.issueId}`, () =>
+    linkPaperclipIssueToGitHubIssueUnlocked(ctx, params));
+}
+
+async function linkPaperclipIssueToGitHubIssueUnlocked(
   ctx: PluginSetupContext,
   params: {
     companyId: string;
@@ -12292,7 +12302,17 @@ async function linkPaperclipIssueToGitHubIssue(
   };
 }
 
+// One worker per installed plugin: serialize the complete check/read/persist
+// sequence across UI, assistant MCP and agent tools for this company/task.
 async function linkPaperclipIssueToGitHubPullRequest(
+  ctx: PluginSetupContext,
+  params: Parameters<typeof linkPaperclipIssueToGitHubPullRequestUnlocked>[1]
+): ReturnType<typeof linkPaperclipIssueToGitHubPullRequestUnlocked> {
+  return withPullRequestLinkMutationLock(`task-link:${params.companyId}:${params.issueId}`, () =>
+    linkPaperclipIssueToGitHubPullRequestUnlocked(ctx, params));
+}
+
+async function linkPaperclipIssueToGitHubPullRequestUnlocked(
   ctx: PluginSetupContext,
   params: {
     companyId: string;
@@ -12463,7 +12483,17 @@ async function tombstoneGitHubPullRequestLinkRecord(
   });
 }
 
+// One worker per installed plugin: serialize the complete check/read/persist
+// sequence across UI, assistant MCP and agent tools for this company/task.
 async function unlinkPaperclipIssueFromGitHub(
+  ctx: PluginSetupContext,
+  params: Parameters<typeof unlinkPaperclipIssueFromGitHubUnlocked>[1]
+): ReturnType<typeof unlinkPaperclipIssueFromGitHubUnlocked> {
+  return withPullRequestLinkMutationLock(`task-link:${params.companyId}:${params.issueId}`, () =>
+    unlinkPaperclipIssueFromGitHubUnlocked(ctx, params));
+}
+
+async function unlinkPaperclipIssueFromGitHubUnlocked(
   ctx: PluginSetupContext,
   params: {
     companyId: string;

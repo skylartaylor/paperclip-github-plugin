@@ -316,3 +316,14 @@ replacement for every webhook event: CI-only changes or comment edits that do no
 change that metadata may require an explicit refresh. It does not automatically
 recreate every old PR relationship. Read-only polling and historical import do
 not grant agents merge, comment or issue-write permissions.
+
+
+### Concurrent task linking
+
+The complete GitHub link/unlink operation is serialized per company and Paperclip
+issue across manual UI actions, assistant MCP actions and agent tools. A manual
+link rechecks the unlinked condition inside that critical section before fetching
+metadata or persisting, so concurrent distinct requests cannot both create a first
+link. Existing agent multi-link behavior is preserved. The lock is local to the
+single host-owned worker for the installed plugin, matching the plugin runtime;
+multiple independent workers sharing plugin state require a durable lock.

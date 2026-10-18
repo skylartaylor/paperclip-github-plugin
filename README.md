@@ -684,3 +684,14 @@ or silently applying a partial set. Deploy the SDK extension for native mirrorin
 During bounded incremental polling, fresh open Backlog imports stay in Backlog
 even when linked PRs would otherwise activate execution; closed issue status still
 syncs. Agent wakeups remain governed by the separate hardening policy.
+
+
+### Concurrent task linking
+
+The complete GitHub link/unlink operation is serialized per company and Paperclip
+issue across manual UI actions, assistant MCP actions and agent tools. A manual
+link rechecks the unlinked condition inside that critical section before fetching
+metadata or persisting, so concurrent distinct requests cannot both create a first
+link. Existing agent multi-link behavior is preserved. The lock is local to the
+single host-owned worker for the installed plugin, matching the plugin runtime;
+multiple independent workers sharing plugin state require a durable lock.

@@ -9070,6 +9070,47 @@ test('project.pullRequests.createIssue rejects cross-company follow-through owne
   }
 });
 
+test('concurrent manual issue/PR links cannot pass the same unlinked check', async () => {
+  for (const [firstActor, secondKind] of [['manual', 'issue'], ['manual', 'pull_request'], ['agent', 'issue']] as const) {
+    const harness = await createProjectPullRequestsHarness();
+    const issue = await harness.ctx.issues.create({ companyId: 'company-1', projectId: 'project-1', title: 'Concurrent link target' });
+    const originalFetch = globalThis.fetch;
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let metadataReads = 0;
+    globalThis.fetch = async (input, init) => {
+      const path = getDecodedRequestPathname(input);
+      if (path.includes('/issues/') || path.includes('/pulls/')) {
+        metadataReads++;
+        entered(); await gate;
+        const number = Number(path.split('/').at(-1));
+        return jsonResponse({ id: number * 100, number, title: 'Link target', body: '', html_url: `https://github.com/paperclipai/example-repo/${path.includes('/pulls/') ? 'pull' : 'issues'}/${number}`, state: 'open', comments: 0, labels: [] });
+      }
+      if (path === '/graphql') return graphqlResponse({ repository: { issue: { closedByPullRequestsReferences: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] }, comments: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } });
+      throw new Error(`Unexpected fetch ${path}`);
+    };
+    try {
+      const first = firstActor === 'agent'
+        ? harness.executeTool('link_github_item', { paperclipIssueId: issue.id, kind: 'issue', reference: '88' }, { companyId: 'company-1' })
+        : harness.performAction('issue.linkGitHubItem', { companyId: 'company-1', issueId: issue.id, kind: 'issue', reference: '88' });
+      await started;
+      const second = harness.performAction('issue.linkGitHubItem', { companyId: 'company-1', issueId: issue.id, kind: secondKind, reference: '89' });
+      // All harness state reads are in-memory promises; yield the event loop so
+      // the second operation would reach fetch if its unlinked check ran early.
+      for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+      release();
+      const results = await Promise.allSettled([first, second]);
+      assert.equal(metadataReads, 1, 'the losing request must reject before fetching metadata');
+      assert.equal(results[0]?.status, 'fulfilled');
+      assert.equal(results[1]?.status, 'rejected');
+      assert.match(String((results[1] as PromiseRejectedResult).reason), /already linked/);
+      const links = await harness.ctx.entities.list({ entityType: 'paperclip-github-plugin.issue-link', scopeKind: 'issue', scopeId: issue.id });
+      assert.equal(links.length, 1);
+    } finally { release(); globalThis.fetch = originalFetch; }
+  }
+});
+
 test('issue.linkGitHubItem links a Paperclip issue to a GitHub issue and tracks it for sync', async () => {
   const harness = await createProjectPullRequestsHarness();
   const originalFetch = globalThis.fetch;
