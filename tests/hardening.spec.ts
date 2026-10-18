@@ -114,7 +114,7 @@ test('native label sync creates missing labels and honors human-only company-sco
  await h.performAction('labels.savePairing',{companyId:'company-1',name:'BUG',labelId:'native-bug'},human);
  await assert.rejects(h.performAction('labels.savePairing',{companyId:'company-1',name:'bug',labelId:'other-company'},human),/existing label in this company/);
  await assert.rejects(h.performAction('labels.savePairing',{companyId:'company-1',name:'bug',labelId:''},{companyId:'company-1',actor:{type:'agent',agentId:'worker',runId:'run',companyId:'company-1'}}),/authenticated human/);
- const issue={id:12,number:12,title:'Synthetic paired labels',state:'open',htmlUrl:'https://github.com/paperclipai/example-repo/issues/12',body:'Synthetic body',labels:[{name:'bug',color:'ff0000'},{name:'enhancement',color:'00ff00'}],commentsCount:0,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+ const issue={id:12,number:12,title:'Synthetic paired labels',state:'open',htmlUrl:'https://github.com/paperclipai/example-repo/issues/12',body:'Synthetic body',labels:[{name:'Bug',color:'ff0000'},{name:'enhancement',color:'00ff00'}],commentsCount:0,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
  const result=await module.__testing.createPaperclipIssue(h.ctx,{id:'pilot',companyId:'company-1',paperclipProjectId:'project-1',paperclipProjectName:'Pilot',repositoryUrl:'https://github.com/paperclipai/example-repo'},{defaultStatus:'backlog'},issue as any,new Map(),undefined);
  assert.deepEqual(result.unresolvedGitHubLabels,[]);assert.equal(created,1);
  const saved=await h.ctx.issues.get(result.id,'company-1');
@@ -122,7 +122,7 @@ test('native label sync creates missing labels and honors human-only company-sco
  assert.equal(await module.__testing.synchronizePaperclipIssueLabels(h.ctx,'company-1',saved!,issue as any,new Map(),undefined),false);
  assert.equal(created,1);
  const directory=await h.getData('labels.directory',{companyId:'company-1'}) as any;
- assert.ok(directory.githubLabels.includes('enhancement'));assert.deepEqual(directory.pairings,[{name:'bug',labelId:'native-bug'}]);
+ assert.ok(directory.githubLabels.includes('enhancement'));assert.equal(directory.githubLabels.filter((name:string)=>name.toLowerCase()==='bug').length,1);assert.deepEqual(directory.pairings,[{name:'bug',labelId:'native-bug'}]);
  const other=await h.getData('labels.directory',{companyId:'company-2'}) as any;assert.equal(other.pairings.length,0);
  await h.performAction('labels.savePairing',{companyId:'company-1',name:'bug',labelId:''},human);
  assert.deepEqual((await h.getData('labels.directory',{companyId:'company-1'}) as any).pairings,[]);

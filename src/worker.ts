@@ -25010,7 +25010,7 @@ const plugin = definePlugin({
       const labels=await native.listLabels(companyId);
       const pairings=readLabelPairings(await ctx.state.get(labelPairingScope(companyId)));
       const names=new Set(pairings.map(p=>p.name));
-      for(const link of await listGitHubIssueLinkRecords(ctx)) if(link.data.companyId===companyId) for(const label of link.data.labels) names.add(label.name);
+      for(const link of await listGitHubIssueLinkRecords(ctx)) if(link.data.companyId===companyId) for(const label of link.data.labels) names.add(label.name.trim().toLowerCase());
       return {labels,pairings,githubLabels:[...names].sort((a,b)=>a.localeCompare(b))};
     });
     ctx.actions.register('labels.savePairing',async(input,context)=>{
