@@ -273,3 +273,46 @@ Task watchdogs MUST NOT replace GitHub Sync's scheduled/manual PR status refresh
 - Plugin webhook work MUST revalidate signatures, require explicit company configuration and saved mappings, retain company scope, and synchronize specific affected items without a company-wide scan. Scheduled sync may remain paused independently.
 - SDK-only synchronization MUST never display a board-token requirement in toolbars or KPI widgets. Missing settings MUST continue to fail closed.
 - Qualification MUST distinguish real GitHub delivery from synthetic signing/queue tests and must not claim historical backfill, nonempty PR/CI acceptance or missed-delivery recovery without corresponding evidence.
+
+
+## Bounded incremental polling and operator backfill (self-hosted fork)
+
+`hardening.incrementalPollingEnabled` defaults off. An operator may enable it in
+company plugin configuration while leaving broad `scheduleEnabled` false. It
+requires SDK-only sync, disabled agent wakeups, and no automatic agent assignee
+in company import/transition defaults. It uses the existing minute job, with no
+new service or GitHub write permission. Other companies retain their own schedule.
+
+Each tick rotates through at most eight repository metadata requests and five
+exact-item refreshes across the instance. For sixteen mappings, metadata probes
+normally occur about every two minutes; busy queues and backoff increase latency.
+Stable authenticated request URLs use ETags. A 304 creates no issue work. Changed
+metadata is checkpointed before refresh; failures retain their items for retry.
+Recent time windows overlap by two minutes. Dense windows are split by timestamp,
+without paging a moving list. A window with 100 or more updates in a single second
+is retained with an operator-attention error rather than skipped. PR fan-out uses durable target identities: a PR affecting more than the remaining
+five-item budget continues on later ticks without blocking its repository.
+Subjects exceeding the independent hardening item cap remain for operator review.
+The recent activity cursor begins at activation time, not the beginning of the
+repository. Historical open issues require an explicit bounded backfill.
+
+Work pauses if one-minute load reaches two thirds of available logical CPUs
+(minimum threshold two), free memory drops below 8 GiB, or the tick has spent
+40 seconds starting work. In-flight sync completes cooperatively. Rate/permission
+rejections and low remaining API budget back off. These bounds cover metadata
+requests and exact sync subjects; a subject may need multiple existing SDK/GitHub
+reads for comments, reviews and status. No new credentials are exposed to agents.
+
+The human-only action `polling.queueBackfill` accepts `companyId`, `repositoryUrl`
+and 1–25 positive issue `numbers` for an already enabled mapping. It deduplicates
+pending numbers, caps each mapping queue at 25, and drains through the same shared
+work budget. `polling.status` reports company-scoped pending/backfill counts,
+watermarks, backoff and safe failure messages. Disabling incremental polling
+preserves checkpoints and pending work for resume. Imports use existing configured
+Backlog/unassigned defaults; pause before changing those defaults to agents.
+
+Polling detects changes represented by GitHub issue/PR metadata. It is not a
+replacement for every webhook event: CI-only changes or comment edits that do not
+change that metadata may require an explicit refresh. It does not automatically
+recreate every old PR relationship. Read-only polling and historical import do
+not grant agents merge, comment or issue-write permissions.

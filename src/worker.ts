@@ -1,10 +1,11 @@
+import {pollTick, readPollState, queueBackfill, type PollRefreshResult} from './incremental-polling.ts';
 import {verifyWebhook, webhookSubject} from './webhook-contract.ts';
 import { hardeningPolicy, assertHumanAction, assertCoordinator, requireHeadSha } from './hardening-policy.ts';
 import { Buffer } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, loadavg, freemem, availableParallelism } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Octokit } from '@octokit/rest';
@@ -234,7 +235,7 @@ interface GitHubOctokitLogContext {
   logFailures?: boolean;
   operation?: string;
   repositoryUrl?: string;
-  syncTrigger?: 'manual' | 'schedule' | 'retry' | 'webhook';
+  syncTrigger?: 'manual' | 'schedule' | 'retry' | 'webhook' | 'poll';
   toolName?: string;
 }
 
@@ -359,7 +360,7 @@ interface SyncRunState {
   createdIssuesCount?: number;
   skippedIssuesCount?: number;
   erroredIssuesCount?: number;
-  lastRunTrigger?: 'manual' | 'schedule' | 'retry' | 'webhook';
+  lastRunTrigger?: 'manual' | 'schedule' | 'retry' | 'webhook' | 'poll';
   cancelRequestedAt?: string;
   progress?: SyncProgressState;
   errorDetails?: SyncErrorDetails;
@@ -2365,7 +2366,7 @@ function createIdleSyncState(): SyncRunState {
 
 function createCancelledSyncState(params: {
   message: string;
-  trigger: 'manual' | 'schedule' | 'retry' | 'webhook';
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook' | 'poll';
   syncedIssuesCount: number;
   createdIssuesCount: number;
   skippedIssuesCount: number;
@@ -3652,7 +3653,7 @@ function appendRecentSyncFailureLogEntry(
 
 function createErrorSyncState(params: {
   message: string;
-  trigger: 'manual' | 'schedule' | 'retry' | 'webhook';
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook' | 'poll';
   syncedIssuesCount: number;
   createdIssuesCount: number;
   skippedIssuesCount: number;
@@ -3691,7 +3692,7 @@ function createErrorSyncState(params: {
 
 function createRunningSyncState(
   previous: SyncRunState,
-  trigger: 'manual' | 'schedule' | 'retry' | 'webhook',
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook' | 'poll',
   options: {
     syncedIssuesCount?: number;
     createdIssuesCount?: number;
@@ -5185,7 +5186,7 @@ async function buildProjectPullRequestPaperclipIssueData(
 
 function createSetupConfigurationErrorSyncState(
   issue: SyncConfigurationIssue,
-  trigger: 'manual' | 'schedule' | 'retry' | 'webhook'
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook' | 'poll'
 ): SyncRunState {
   switch (issue) {
     case 'missing_token':
@@ -5445,7 +5446,7 @@ function buildCancelledSyncMessage(
 
 async function createUnexpectedSyncErrorResult(
   ctx: PluginSetupContext,
-  trigger: 'manual' | 'schedule' | 'retry' | 'webhook',
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook' | 'poll',
   error: unknown,
   companyId?: string
 ): Promise<GitHubSyncSettings> {
@@ -5966,7 +5967,7 @@ function normalizeSyncState(value: unknown): SyncRunState {
     ...(typeof record.createdIssuesCount === 'number' ? { createdIssuesCount: record.createdIssuesCount } : {}),
     ...(typeof record.skippedIssuesCount === 'number' ? { skippedIssuesCount: record.skippedIssuesCount } : {}),
     ...(typeof record.erroredIssuesCount === 'number' ? { erroredIssuesCount: record.erroredIssuesCount } : {}),
-    ...(lastRunTrigger === 'manual' || lastRunTrigger === 'schedule' || lastRunTrigger === 'retry' || lastRunTrigger === 'webhook'
+    ...(lastRunTrigger === 'manual' || lastRunTrigger === 'schedule' || lastRunTrigger === 'retry' || lastRunTrigger === 'webhook' || lastRunTrigger === 'poll'
       ? { lastRunTrigger }
       : {}),
     ...(typeof record.cancelRequestedAt === 'string' ? { cancelRequestedAt: record.cancelRequestedAt } : {}),
@@ -21808,7 +21809,7 @@ async function listScheduledSyncTargets(
 
 async function performSync(
   ctx: PluginSetupContext,
-  trigger: 'manual' | 'schedule' | 'retry' | 'webhook',
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook' | 'poll',
   options: {
     resolvedToken?: string;
     target?: ResolvedSyncTarget;
@@ -22865,9 +22866,22 @@ async function performSync(
   }
 }
 
-async function startSync(
+let syncAdmissionSerial:Promise<unknown>=Promise.resolve();
+async function startSync(ctx:PluginSetupContext, trigger:'manual'|'schedule'|'retry'|'webhook'|'poll', options:{awaitCompletion?:boolean;paperclipApiBaseUrl?:string;target?:ResolvedSyncTarget}={}):Promise<GitHubSyncSettings> {
+  // Repeated toolbar reads join immediately; serializing their grace periods would
+  // turn a running response into a second sync after the first completes.
+  if(activeSyncPromise && trigger==='manual') return startSyncWithAdmission(ctx,trigger,options);
+  const result=syncAdmissionSerial.then(async()=>{
+    if(options.awaitCompletion && options.target) while(activeSyncPromise) await activeSyncPromise;
+    return startSyncWithAdmission(ctx,trigger,options);
+  });
+  syncAdmissionSerial=result.catch(()=>undefined);
+  return result;
+}
+
+async function startSyncWithAdmission(
   ctx: PluginSetupContext,
-  trigger: 'manual' | 'schedule' | 'retry' | 'webhook',
+  trigger: 'manual' | 'schedule' | 'retry' | 'webhook' | 'poll',
   options: {
     awaitCompletion?: boolean;
     paperclipApiBaseUrl?: string;
@@ -24756,6 +24770,8 @@ export function shouldStartWorkerHost(moduleUrl: string, entry = process.argv[1]
 }
 
 export const __testing = {
+  runIncrementalPolling,
+  syncMappedGitHubSubject,
   cacheGitHubPullRequestReviewSummary,
   cacheGitHubPullRequestReviewThreadSummary,
   listIssueInteractionEvents,
@@ -24818,10 +24834,17 @@ async function handleGitHubWebhook(input: import('@paperclipai/plugin-sdk').Plug
     if (config.webhooks?.enabled !== true || !config.webhooks.secretFile || !isAbsolute(config.webhooks.secretFile)) throw new Error('Webhook sync is not enabled');
     const secret = (await readFile(config.webhooks.secretFile, 'utf8')).trim();
     if (!verifyWebhook(secret, input.rawBody, header('x-hub-signature-256'))) throw new Error('Invalid webhook signature');
+    await syncMappedGitHubSubject(ctx,mapping,body,event,'webhook');
+  }
+}
+
+async function syncMappedGitHubSubject(ctx:PluginSetupContext, mapping:RepositoryMapping, body:any, event:string, trigger:'webhook'|'poll', maxTargets?:number, continuation?:string[]):Promise<PollRefreshResult> {
+  const subject=webhookSubject(event,body);
+  const config=await getResolvedConfig(ctx,mapping.companyId,{requireCompanyScope:true});
     const repository = parseRepositoryReference(mapping.repositoryUrl);
     if (!repository || !mapping.companyId || !mapping.paperclipProjectId) throw new Error('Incomplete webhook mapping');
     invalidateProjectPullRequestCaches({companyId: mapping.companyId!, projectId: mapping.paperclipProjectId!, repository});
-    if (event === 'ping') continue;
+    if (event === 'ping') return {workCount:0,complete:true,remaining:[]};
     const issueNumbers = new Set<number>(subject.issueNumber ? [subject.issueNumber] : []);
     const prNumbers = new Set<number>(subject.pullRequestNumber ? [subject.pullRequestNumber] : []);
     for (const pr of body.check_run?.pull_requests ?? body.check_suite?.pull_requests ?? []) {
@@ -24849,14 +24872,76 @@ async function handleGitHubWebhook(input: import('@paperclipai/plugin-sdk').Plug
         }
       }
     }
-    if (targets.length > hardeningPolicy(config.hardening).maxItemsPerSync) throw new Error('Webhook exceeds configured item budget');
-    for (const target of targets) {
+    if (targets.length > hardeningPolicy(config.hardening).maxItemsPerSync) throw new Error('GitHub subject exceeds configured item budget; operator catch-up required');
+    const targetKey=(target:ResolvedSyncTarget)=>target.githubIssueNumber?`issue:${target.githubIssueNumber}`:`pr:${target.githubPullRequestNumber}:${target.issueId}`;
+    const byKey=new Map(targets.map(target=>[targetKey(target),target]));
+    // Persist target identities, not positional offsets: link ordering or removal
+    // between ticks must not skip a different task or cross a mapping boundary.
+    const remaining=(continuation??[...byKey.keys()]).filter(key=>byKey.has(key));
+    const selected=remaining.slice(0,maxTargets??remaining.length);
+    for (const key of selected) {
+      const target=byKey.get(key)!;
       // Never acknowledge an unrelated in-flight manual sync as this delivery's work.
       while (activeSyncPromise) await activeSyncPromise;
-      const result = await startSync(ctx, 'webhook', {awaitCompletion:true,target});
+      const result = await startSync(ctx, trigger, {awaitCompletion:true,target});
       if (result.syncState.status !== 'success') throw new Error('Webhook sync did not complete; retained delivery will retry');
     }
+    const next=remaining.slice(selected.length);
+    return {workCount:selected.length,complete:next.length===0,remaining:next};
+}
+
+const POLLING_SCOPE = {scopeKind:'instance' as const,stateKey:'github.incremental-polling.v1'};
+const pollKey = (mapping:RepositoryMapping) => `${mapping.companyId}:${mapping.paperclipProjectId}:${parseRepositoryReference(mapping.repositoryUrl)?.url.toLowerCase()}`;
+function pollingAdmitted():boolean {
+  return loadavg()[0]<Math.max(2,availableParallelism()*2/3) && freemem()>8*1024**3;
+}
+async function incrementalMappings(ctx:PluginSetupContext):Promise<RepositoryMapping[]> {
+  const settings=normalizeSettings(await ctx.state.get(SETTINGS_SCOPE));
+  const enabled=new Set<string>();
+  for(const companyId of new Set(settings.mappings.map(m=>m.companyId).filter((id):id is string=>Boolean(id)))) {
+    let config:GitHubSyncConfig;
+    try {config=await getResolvedConfig(ctx,companyId,{requireCompanyScope:true});}
+    catch(error) {if(isCompanyScopeDeniedError(error)) continue;throw error;}
+    const policy=hardeningPolicy(config.hardening);
+    if(!policy.incrementalPollingEnabled) continue;
+    const scoped=materializeScopedSettings(settings,config,companyId);
+    const defaults=getCompanyAdvancedSettings(scoped,companyId);
+    if(policy.wakeupsEnabled || !policy.sdkOnlySync || defaults.defaultAssigneeAgentId || defaults.executorAssigneeAgentId || defaults.reviewerAssigneeAgentId || defaults.approverAssigneeAgentId) {
+      throw new Error('Incremental polling requires SDK-only sync, disabled wakeups and no automatic agent assignees');
+    }
+    enabled.add(companyId);
   }
+  return getSyncableMappings(settings.mappings).filter(m=>m.companyId && enabled.has(m.companyId));
+}
+async function runIncrementalPolling(ctx:PluginSetupContext, admitted:()=>boolean=pollingAdmitted):Promise<void> {
+  const mappings=await incrementalMappings(ctx);
+  const byKey=new Map(mappings.map(m=>[pollKey(m),m]));
+  const state=readPollState(await ctx.state.get(POLLING_SCOPE));
+  const started=Date.now();
+  const save=async()=>{await ctx.state.set(POLLING_SCOPE,state);};
+  await pollTick({state,now:Math.floor(started/1000),mappings:[...byKey].map(([key,m])=>({key,repository:m.repositoryUrl})),save,
+    admitted:()=>admitted() && Date.now()-started<40_000,
+    fetch:async(mapping,query)=>{
+      const saved=byKey.get(mapping.key)!;
+      const repository=parseRepositoryReference(saved.repositoryUrl)!;
+      const client=await createGitHubToolOctokit(ctx,saved.companyId);
+      try {
+        const response=await client.rest.issues.listForRepo({owner:repository.owner,repo:repository.repo,state:'all',sort:query.sort,direction:query.direction,per_page:query.per_page,...(query.since?{since:query.since}:{}),headers:query.etag?{'if-none-match':query.etag}:{}});
+        return {status:response.status,headers:Object.fromEntries(Object.entries(response.headers).map(([k,v])=>[k,v===undefined?undefined:String(v)])),data:response.data};
+      } catch(error) {
+        const err=error as {status?:number;response?:{headers?:Record<string,string|undefined>}};
+        if(err.status===304) return {status:304,headers:err.response?.headers??{},data:[]};
+        throw error;
+      }
+    },
+    refresh:async(mapping,item,remainingBudget)=>{
+      const saved=(await incrementalMappings(ctx)).find(m=>pollKey(m)===mapping.key);
+      if(!saved) throw new Error('Incremental polling was paused or the mapping changed');
+      const repository=parseRepositoryReference(saved.repositoryUrl)!;
+      const event=item.pullRequest?'pull_request':'issues';
+      return syncMappedGitHubSubject(ctx,saved,{repository:{full_name:`${repository.owner}/${repository.repo}`},[item.pullRequest?'pull_request':'issue']:{number:item.number}},event,'poll',remainingBudget,item.remaining);
+    }
+  });
 }
 
 const plugin = definePlugin({
@@ -24876,6 +24961,31 @@ const plugin = definePlugin({
     });
   },
   async setup(ctx) {
+    ctx.data.register('polling.status', async(input)=>{
+      const record=input && typeof input==='object'?input as Record<string,unknown>:{};
+      const companyId=normalizeCompanyId(record.companyId);
+      if(!companyId) throw new Error('Polling status requires company scope');
+      const mappings=(await incrementalMappings(ctx)).filter(m=>m.companyId===companyId);
+      const state=readPollState(await ctx.state.get(POLLING_SCOPE));
+      return {enabled:mappings.length>0,admitted:pollingAdmitted(),backoffUntil:state.backoffUntil,repositories:mappings.map(m=>{
+        const repo=state.repos[pollKey(m)];
+        return {repository:m.repositoryUrl,pending:repo?.pending.length??0,backfill:repo?.backfill.length??0,watermark:repo?.watermark,nextPollAt:repo?.nextPollAt,error:repo?.error};
+      })};
+    });
+    ctx.actions.register('polling.queueBackfill', async(input,actionContext)=>{
+      const record=normalizeActionRecord(input,actionContext);
+      const companyId=normalizeCompanyId(record.companyId);
+      if(!companyId) throw new Error('Backfill requires company scope');
+      const repository=parseRepositoryReference(record.repositoryUrl as string);
+      const result=webhookSerial.then(async()=>{
+        const mapping=(await incrementalMappings(ctx)).find(m=>m.companyId===companyId && parseRepositoryReference(m.repositoryUrl)?.url.toLowerCase()===repository?.url.toLowerCase());
+        if(!mapping) throw new Error('Repository is not mapped for incremental polling');
+        const state=readPollState(await ctx.state.get(POLLING_SCOPE));
+        const queued=queueBackfill(state,pollKey(mapping),record.numbers,Math.floor(Date.now()/1000));
+        await ctx.state.set(POLLING_SCOPE,state);return {queued};
+      });
+      webhookSerial=result.then(()=>undefined,()=>undefined);return result;
+    });
     pluginRuntimeContext = ctx;
     // A fresh worker must not inherit a previous process's tool-access probe results.
     clearAgentToolAccessSummaryCache();
@@ -25498,11 +25608,18 @@ const plugin = definePlugin({
     registerGitHubAgentTools(ctx);
 
     ctx.jobs.register('sync.github-issues', async (job) => {
+      const incremental=await incrementalMappings(ctx);
+      if (incremental.length) {
+        const result=webhookSerial.then(()=>runIncrementalPolling(ctx));
+        webhookSerial=result.then(()=>undefined,()=>undefined);
+        await result;
+      }
       const settings = normalizeSettings(await ctx.state.get(SETTINGS_SCOPE));
       const trigger = job.trigger === 'retry' ? 'retry' : 'schedule';
       const scheduledTargets = await listScheduledSyncTargets(ctx, settings);
 
       if (scheduledTargets.length === 0) {
+        if(incremental.length) return;
         const reconciledSettings = await reconcileOrphanedRunningSyncState(ctx);
         if (job.trigger === 'schedule' && !shouldRunScheduledSync(reconciledSettings, job.scheduledAt)) {
           return;
@@ -25513,6 +25630,7 @@ const plugin = definePlugin({
       }
 
       for (const target of scheduledTargets) {
+        if(target && incremental.some(m=>m.companyId===target.companyId)) continue;
         const scopedSettings = await reconcileOrphanedRunningSyncState(ctx, target?.companyId);
         if (job.trigger === 'schedule' && !shouldRunScheduledSync(scopedSettings, job.scheduledAt)) {
           continue;

@@ -13,7 +13,7 @@ async function setup(hardening:unknown={}) {
  return {h,module};
 }
 test('hardening defaults are paused, bounded, SDK-only and have no write coordinator',()=>{
- assert.deepEqual(hardeningPolicy(undefined),{scheduleEnabled:false,permissionProbesEnabled:false,wakeupsEnabled:false,sdkOnlySync:true,maxItemsPerSync:25});
+ assert.deepEqual(hardeningPolicy(undefined),{incrementalPollingEnabled:false,scheduleEnabled:false,permissionProbesEnabled:false,wakeupsEnabled:false,sdkOnlySync:true,maxItemsPerSync:25});
  assert.throws(()=>assertCoordinator(hardeningPolicy({}), 'worker'),/coordinator/);
  assert.throws(()=>assertCoordinator(hardeningPolicy({coordinatorAgentId:'steward'}),'worker'),/coordinator/);
  assert.doesNotThrow(()=>assertCoordinator(hardeningPolicy({coordinatorAgentId:'steward'}),'steward'));
@@ -25,7 +25,7 @@ test('hardening defaults are paused, bounded, SDK-only and have no write coordin
 test('agents cannot spoof a human through UI actions, including settings and sync controls',async()=>{
  const {h}=await setup();
  const before=await h.getData('settings.registration',{companyId:'company-1'});
- for(const key of ['settings.saveRegistration','settings.validateToken','settings.ensureGitHubTokenAvailable','settings.updateBoardAccess','project.pullRequests.merge','project.pullRequests.addComment','project.pullRequests.close','sync.runNow','sync.cancel']) {
+ for(const key of ['settings.saveRegistration','settings.validateToken','settings.ensureGitHubTokenAvailable','settings.updateBoardAccess','project.pullRequests.merge','project.pullRequests.addComment','project.pullRequests.close','sync.runNow','sync.cancel','polling.queueBackfill']) {
   await assert.rejects(h.performAction(key,{companyId:'company-1',actor:{type:'user',userId:'operator'},token:'synthetic',hardening:{coordinatorAgentId:'worker'}},{companyId:'company-1',actor:{type:'agent',agentId:'worker',runId:'run',companyId:'company-1'}}),/authenticated human/,key);
  }
  const after=await h.getData('settings.registration',{companyId:'company-1'});

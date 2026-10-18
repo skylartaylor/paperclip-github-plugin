@@ -1,6 +1,7 @@
 import type { PluginPerformActionContext } from '@paperclipai/plugin-sdk';
 
 export interface HardeningPolicy {
+  incrementalPollingEnabled: boolean;
   scheduleEnabled: boolean;
   permissionProbesEnabled: boolean;
   wakeupsEnabled: boolean;
@@ -14,6 +15,7 @@ export function hardeningPolicy(value: unknown): HardeningPolicy {
   const v = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const limit = typeof v.maxItemsPerSync === 'number' ? v.maxItemsPerSync : 25;
   return {
+    incrementalPollingEnabled: v.incrementalPollingEnabled === true,
     scheduleEnabled: v.scheduleEnabled === true,
     permissionProbesEnabled: v.permissionProbesEnabled === true,
     wakeupsEnabled: v.wakeupsEnabled === true,

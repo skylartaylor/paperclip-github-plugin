@@ -290,7 +290,7 @@ interface AgentToolAccessSummary {
 }
 
 interface GitHubSyncSettings {
-  hardening?: {scheduleEnabled: boolean; wakeupsEnabled: boolean};
+  hardening?: {scheduleEnabled: boolean; wakeupsEnabled: boolean; incrementalPollingEnabled?:boolean};
   sdkOnlySync?: boolean;
   webhooksEnabled?: boolean;
   mappings: RepositoryMapping[];
@@ -11834,7 +11834,7 @@ export function GitHubSyncSettingsPage(): React.JSX.Element {
   const showTokenForm = tokenStatus !== 'valid' || showTokenEditor;
   const lastUpdated = formatDate(form.updatedAt ?? currentSettings?.updatedAt, 'Not saved yet');
   const lastSync = formatDate(displaySyncState.checkedAt, 'Never');
-  const scheduleDescription = settings.data?.hardening?.scheduleEnabled === false ? (settings.data?.webhooksEnabled ? 'Polling paused; signed webhooks active.' : 'Automatic sync paused; manual sync is available.') : formatScheduleFrequency(scheduleFrequencyMinutes);
+  const scheduleDescription = settings.data?.hardening?.incrementalPollingEnabled ? 'Bounded incremental polling active; imports are paced.' : settings.data?.hardening?.scheduleEnabled === false ? (settings.data?.webhooksEnabled ? 'Polling paused; signed webhooks active.' : 'Automatic sync paused; manual sync is available.') : formatScheduleFrequency(scheduleFrequencyMinutes);
   const syncProgress = getRunningSyncProgressModel(displaySyncState);
   const syncMetricCards = getSyncMetricCards({
     totalSyncedIssuesCount: currentSettings?.totalSyncedIssuesCount ?? form.totalSyncedIssuesCount,
@@ -13482,7 +13482,7 @@ export function GitHubSyncDashboardWidget(): React.JSX.Element {
   const syncInFlight = syncStartPending || syncPersistedRunning;
   const cancellationRequested = syncPersistedRunning && (cancellingSync || isSyncCancellationRequested(displaySyncState));
   const scheduleFrequencyMinutes = normalizeScheduleFrequencyMinutes(current.scheduleFrequencyMinutes);
-  const scheduleDescription = current.hardening?.scheduleEnabled === false ? (current.webhooksEnabled ? 'Polling paused; signed webhooks active.' : 'Automatic sync paused; manual sync is available.') : formatScheduleFrequency(scheduleFrequencyMinutes);
+  const scheduleDescription = current.hardening?.incrementalPollingEnabled ? 'Bounded incremental polling active; imports are paced.' : current.hardening?.scheduleEnabled === false ? (current.webhooksEnabled ? 'Polling paused; signed webhooks active.' : 'Automatic sync paused; manual sync is available.') : formatScheduleFrequency(scheduleFrequencyMinutes);
   const summary = getDashboardSummary({
     syncIssue: syncSetupIssue,
     hasCompanyContext,
@@ -13841,7 +13841,7 @@ export function GitHubSyncKpiDashboardWidget(): React.JSX.Element {
     hasBoardAccess: boardAccessReady
   });
   const syncPersistedRunning = displaySyncState.status === 'running';
-  const scheduleDescription = current.hardening?.scheduleEnabled === false ? (current.webhooksEnabled ? 'Polling paused; signed webhooks active.' : 'Automatic sync paused; manual sync is available.') : formatScheduleFrequency(normalizeScheduleFrequencyMinutes(current.scheduleFrequencyMinutes));
+  const scheduleDescription = current.hardening?.incrementalPollingEnabled ? 'Bounded incremental polling active; imports are paced.' : current.hardening?.scheduleEnabled === false ? (current.webhooksEnabled ? 'Polling paused; signed webhooks active.' : 'Automatic sync paused; manual sync is available.') : formatScheduleFrequency(normalizeScheduleFrequencyMinutes(current.scheduleFrequencyMinutes));
   const kpiSummary = getKpiDashboardSummary({
     hasCompanyContext,
     metrics: currentDashboardMetrics,
