@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -2235,7 +2235,7 @@ test('manifest declares GitHub agent tools and only the external metrics API rou
   );
   assert.match(
     manifest.tools?.find((tool) => tool.name === 'add_issue_comment')?.description ?? '',
-    /AI-authorship footer/
+    /no automatic attribution/
   );
 });
 
@@ -2700,7 +2700,7 @@ test('assign_to_current_user assigns the GitHub issue to the token owner without
   }
 });
 
-test('add_issue_comment appends the required AI footer with the llm model', async () => {
+test('add_issue_comment preserves the approved public comment and keeps model attribution private', async () => {
   const harness = await createGitHubAgentToolHarness();
   const originalFetch = globalThis.fetch;
   let postedBody = '';
@@ -2736,14 +2736,14 @@ test('add_issue_comment appends the required AI footer with the llm model', asyn
 
     assert.ok(!result.error);
     assert.match(postedBody, /^I am investigating this now\./);
-    assert.match(postedBody, /---\n###### ✨ This comment was AI-generated using gpt-5\.4/);
-    assert.match((result.data as { comment: { body: string } }).comment.body, /gpt-5\.4/);
+    assert.equal(postedBody, 'I am investigating this now.');
+    assert.equal((result.data as { comment: { body: string } }).comment.body, postedBody);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('add_issue_comment appends a generic AI footer when llmModel is omitted', async () => {
+test('add_issue_comment adds no generic attribution when llmModel is omitted', async () => {
   const harness = await createGitHubAgentToolHarness();
   const originalFetch = globalThis.fetch;
   let postedBody = '';
@@ -2778,14 +2778,14 @@ test('add_issue_comment appends a generic AI footer when llmModel is omitted', a
 
     assert.ok(!result.error);
     assert.match(postedBody, /^I am still investigating this\./);
-    assert.match(postedBody, /---\n###### ✨ This comment was AI-generated$/);
+    assert.equal(postedBody, 'I am still investigating this.');
     assert.doesNotMatch(postedBody, /using /);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('create_pull_request appends the required AI footer to the pull request body', async () => {
+test('create_pull_request preserves the approved pull request body', async () => {
   const harness = await createGitHubAgentToolHarness();
   const issue = await harness.ctx.issues.create({
     companyId: 'company-1',
@@ -2859,8 +2859,8 @@ test('create_pull_request appends the required AI footer to the pull request bod
     );
     assert.equal(publishedBranchRequests[0]?.githubToken, TEST_GITHUB_TOKEN);
     assert.match(createdBody, /^This closes the sync gap\./);
-    assert.match(createdBody, /---\n###### ✨ This pull request description was AI-generated using gpt-5\.4/);
-    assert.match((result.data as { pullRequest: { body: string } }).pullRequest.body, /gpt-5\.4/);
+    assert.equal(createdBody, 'This closes the sync gap.');
+    assert.equal((result.data as { pullRequest: { body: string } }).pullRequest.body, createdBody);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -2927,7 +2927,7 @@ test('create_pull_request publishes to an explicit repository outside Paperclip 
 
     assert.ok(!result.error);
     assert.equal(publishedBranchRequests.length, 1);
-    assert.equal(publishedBranchRequests[0]?.workspacePath, repositoryPath);
+    assert.equal(publishedBranchRequests[0]?.workspacePath, await realpath(repositoryPath));
     assert.equal(publishedBranchRequests[0]?.repositoryUrl, repositoryUrl);
     assert.equal((result.data as { repository: string }).repository, repositoryUrl);
     const links = await harness.ctx.entities.list({
@@ -4597,7 +4597,7 @@ test('update_issue treats an identical closed reason as a no-op and rejects an i
   }
 });
 
-test('update_issue omits a blank body update after stripping AI footers', async () => {
+test('update_issue omits a blank body update', async () => {
   const harness = await createGitHubAgentToolHarness();
   const originalFetch = globalThis.fetch;
   let patchRequestBody: Record<string, unknown> | null = null;
@@ -4652,7 +4652,7 @@ test('update_issue omits a blank body update after stripping AI footers', async 
     const result = await harness.executeTool('update_issue', {
       issueNumber: 12,
       title: 'Retitled issue',
-      body: '\n\n---\n###### ✨ This issue description was AI-generated using old-model'
+      body: ' \n\n '
     }, {
       companyId: 'company-1',
       projectId: 'project-1'
@@ -4766,7 +4766,7 @@ test('update_issue reports a no-op when requested fields already match', async (
   }
 });
 
-test('update_issue refreshes the AI footer when updating the issue body', async () => {
+test('update_issue preserves operator-provided footer text when updating an issue', async () => {
   const harness = await createGitHubAgentToolHarness();
   const originalFetch = globalThis.fetch;
   let updatedBody = '';
@@ -4825,15 +4825,13 @@ test('update_issue refreshes the AI footer when updating the issue body', async 
     });
 
     assert.ok(!result.error);
-    assert.equal(updatedBody.match(/AI-generated/g)?.length ?? 0, 1);
-    assert.doesNotMatch(updatedBody, /old-model/);
-    assert.match(updatedBody, /---\n###### ✨ This issue description was AI-generated using gpt-5\.4/);
+    assert.equal(updatedBody, 'Updated issue details.\n\n---\nCreated by a Paperclip AI agent using old-model.\n\n---\nCreated by a Paperclip AI agent using older-model.');
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('update_pull_request refreshes the AI footer when updating the pull request body', async () => {
+test('update_pull_request preserves operator-provided footer text when updating a pull request', async () => {
   const harness = await createGitHubAgentToolHarness();
   const originalFetch = globalThis.fetch;
   let updatedBody = '';
@@ -4898,10 +4896,8 @@ test('update_pull_request refreshes the AI footer when updating the pull request
     });
 
     assert.ok(!result.error);
-    assert.equal(updatedBody.match(/AI-generated/g)?.length ?? 0, 1);
-    assert.doesNotMatch(updatedBody, /old-model/);
-    assert.match(updatedBody, /---\n###### ✨ This pull request description was AI-generated using gpt-5\.4/);
-    assert.match((result.data as { pullRequest: { body: string } }).pullRequest.body, /gpt-5\.4/);
+    assert.equal(updatedBody, 'Updated PR summary.\n\n---\nCreated by a Paperclip AI agent using old-model.\n\n---\n###### ✨ This pull request description was AI-generated using older-model');
+    assert.equal((result.data as { pullRequest: { body: string } }).pullRequest.body, updatedBody);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -5654,7 +5650,7 @@ test('review-thread tools list, reply to, resolve, and unresolve GitHub review t
       projectId: 'project-1'
     });
     assert.ok(!replyResult.error);
-    assert.match(repliedBody, /---\n###### ✨ This comment was AI-generated using gpt-5\.4/);
+    assert.equal(repliedBody, 'Updated the condition and added a guard.');
 
     const resolveResult = await harness.executeTool('resolve_review_thread', {
       paperclipIssueId: issue.id,

@@ -45,7 +45,7 @@ const projectNumberProperty = {
 
 const llmModelProperty = {
   type: 'string',
-  description: 'Exact LLM name used to draft the GitHub content. When provided, the plugin includes it in the mandatory AI-authorship footer.'
+  description: 'Exact LLM name for the private interaction ledger. It is never appended to public GitHub content.'
 } as const;
 
 const issueTargetSchema = {
@@ -163,7 +163,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
   {
     name: 'update_issue',
     displayName: 'Update Issue',
-    description: 'Update GitHub issue fields such as title, body, state, closure reason, labels, assignees, or milestone. When a non-empty body is provided, the plugin appends an AI-authorship footer and includes llmModel when supplied.',
+    description: 'Update GitHub issue fields such as title, body, state, closure reason, labels, assignees, or milestone. Public body text is preserved after trimming; no automatic attribution is added.',
     parametersSchema: {
       type: 'object',
       additionalProperties: false,
@@ -177,7 +177,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
         },
         body: {
           type: 'string',
-          description: 'Optional human-facing issue description body. If provided, it must remain non-empty after trimming and removing any existing AI footer.'
+          description: 'Optional human-facing issue description body. If provided, it must remain non-empty after trimming.'
         },
         llmModel: llmModelProperty,
         state: {
@@ -256,7 +256,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
   {
     name: 'add_issue_comment',
     displayName: 'Add Issue Comment',
-    description: 'Post a comment on a GitHub issue or pull request. Provide only the human-facing message body; it must remain non-empty after trimming and removing any existing AI footer. The plugin appends the required AI-authorship footer and includes llmModel when supplied.',
+    description: 'Post a comment on a GitHub issue or pull request. Provide the exact human-approved message body. It must remain non-empty after trimming; no automatic attribution is added.',
     parametersSchema: {
       type: 'object',
       additionalProperties: false,
@@ -269,7 +269,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
         body: {
           type: 'string',
           minLength: 1,
-          description: 'Human-facing comment body without the AI footer. It must remain non-empty after trimming and removing any existing AI footer.'
+          description: 'Human-facing comment body as approved by the human. It must remain non-empty after trimming.'
         },
         llmModel: llmModelProperty
       }
@@ -278,7 +278,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
   {
     name: 'create_pull_request',
     displayName: 'Create Pull Request',
-    description: 'Publish the local branch at the exact requested commit, verify the remote branch, then create and link a GitHub pull request in one operation. Optional labels and reviewer requests are applied right after creation and reported back; a failure in those follow-up steps does not undo the pull request. The GitHub credential remains inside the trusted plugin worker. When a non-empty body is provided, the plugin appends an AI-authorship footer and includes llmModel when supplied.',
+    description: 'Publish the local branch at the exact requested commit, verify the remote branch, then create and link a GitHub pull request in one operation. Optional labels and reviewer requests are applied right after creation and reported back; a failure in those follow-up steps does not undo the pull request. The GitHub credential remains inside the trusted plugin worker. Public body text is preserved after trimming; no automatic attribution is added.',
     parametersSchema: {
       type: 'object',
       additionalProperties: false,
@@ -315,7 +315,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
         },
         body: {
           type: 'string',
-          description: 'Optional human-facing pull request description. If provided, it must remain non-empty after trimming and removing any existing AI footer.'
+          description: 'Optional human-facing pull request description. If provided, it must remain non-empty after trimming.'
         },
         llmModel: llmModelProperty,
         draft: {
@@ -363,7 +363,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
   {
     name: 'update_pull_request',
     displayName: 'Update Pull Request',
-    description: 'Edit pull request title, body, base branch, labels, open or close it, or convert between draft and ready for review. When a non-empty body is provided, the plugin appends an AI-authorship footer and includes llmModel when supplied.',
+    description: 'Edit pull request title, body, base branch, labels, open or close it, or convert between draft and ready for review. Public body text is preserved after trimming; no automatic attribution is added.',
     parametersSchema: {
       type: 'object',
       additionalProperties: false,
@@ -377,7 +377,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
         },
         body: {
           type: 'string',
-          description: 'Optional human-facing pull request description. If provided, it must remain non-empty after trimming and removing any existing AI footer.'
+          description: 'Optional human-facing pull request description. If provided, it must remain non-empty after trimming.'
         },
         llmModel: llmModelProperty,
         base: {
@@ -449,7 +449,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
   {
     name: 'reply_to_review_thread',
     displayName: 'Reply To Review Thread',
-    description: 'Reply to an existing pull request review thread. Provide only the human-facing body; the plugin appends the required AI-authorship footer and includes llmModel when supplied.',
+    description: 'Reply to an existing pull request review thread. Provide the exact human-approved body; no automatic attribution is added.',
     parametersSchema: {
       type: 'object',
       additionalProperties: false,
@@ -462,7 +462,7 @@ export const GITHUB_AGENT_TOOLS: PluginToolDeclaration[] = [
         body: {
           type: 'string',
           minLength: 1,
-          description: 'Human-facing reply body without the AI footer. It must remain non-empty after trimming and removing any existing AI footer.'
+          description: 'Human-facing reply body as approved by the human. It must remain non-empty after trimming.'
         },
         llmModel: llmModelProperty,
         paperclipIssueId: paperclipIssueIdProperty

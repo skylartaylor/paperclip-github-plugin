@@ -140,10 +140,6 @@ const STATUS_TRANSITION_WAKE_REASON = 'GitHub Sync moved an assigned issue into 
 const ISSUE_LINK_ENTITY_TYPE = 'paperclip-github-plugin.issue-link';
 const PULL_REQUEST_LINK_ENTITY_TYPE = 'paperclip-github-plugin.pull-request-link';
 const COMMENT_ANNOTATION_ENTITY_TYPE = 'paperclip-github-plugin.comment-annotation';
-const AI_AUTHORED_FOOTER_MARKDOWN_PREFIX = '###### \u2728 This ';
-const AI_AUTHORED_LEGACY_FOOTER_PATTERN = /\n\n---\nCreated by a Paperclip AI agent(?: using [^\n]+)?\.\s*$/;
-const AI_AUTHORED_MARKDOWN_FOOTER_PATTERN =
-  /\n\n---\n###### ✨ This (?:comment|issue description|pull request description) was AI-generated(?: using [^\n]+)?\s*$/;
 const HIDDEN_GITHUB_IMPORT_MARKER_PREFIX = '<!-- paperclip-github-plugin-imported-from: ';
 const HIDDEN_GITHUB_IMPORT_MARKER_SUFFIX = ' -->';
 const EMPTY_GITHUB_ISSUE_DESCRIPTION_PLACEHOLDER = '_No description provided on GitHub._';
@@ -577,7 +573,7 @@ interface StatusTransitionCommentAnnotationInput {
   reason: string;
 }
 
-type AiAuthorshipFooterSubject = 'comment' | 'issue description' | 'pull request description';
+
 
 type GitHubPullRequestStatusSnapshotCache = Map<string, GitHubPullRequestStatusSnapshot>;
 
@@ -18178,50 +18174,16 @@ async function getGitHubPullRequestProjectItems(
   };
 }
 
-function stripAiAuthorshipFooter(body: string): string {
-  let strippedBody = body;
-
-  while (true) {
-    const nextBody = strippedBody
-      .replace(AI_AUTHORED_LEGACY_FOOTER_PATTERN, '')
-      .replace(AI_AUTHORED_MARKDOWN_FOOTER_PATTERN, '');
-    if (nextBody === strippedBody) {
-      return strippedBody;
-    }
-
-    strippedBody = nextBody;
-  }
+// Public text must match the operator-reviewed draft. Model attribution stays in
+// the private interaction ledger; never add or remove public signatures/footers.
+function normalizeRequiredPublicBody(body: string, _subject: string, _llmModel?: string): string {
+  const trimmedBody = body.trim();
+  if (!trimmedBody) throw new Error('Comment body cannot be empty.');
+  return trimmedBody;
 }
 
-function formatAiAuthorshipFooter(subject: AiAuthorshipFooterSubject, llmModel?: string): string {
-  const trimmedModel = llmModel?.trim();
-  return `\n\n---\n${AI_AUTHORED_FOOTER_MARKDOWN_PREFIX}${subject} was AI-generated${trimmedModel ? ` using ${trimmedModel}` : ''}`;
-}
-
-function appendAiAuthorshipFooter(
-  body: string,
-  subject: AiAuthorshipFooterSubject,
-  llmModel?: string
-): string {
-  const trimmedBody = stripAiAuthorshipFooter(body).trim();
-  if (!trimmedBody) {
-    throw new Error('Comment body cannot be empty.');
-  }
-
-  return `${trimmedBody}${formatAiAuthorshipFooter(subject, llmModel)}`;
-}
-
-function appendOptionalAiAuthorshipFooter(
-  body: string,
-  subject: AiAuthorshipFooterSubject,
-  llmModel?: string
-): string | undefined {
-  const trimmedBody = stripAiAuthorshipFooter(body).trim();
-  if (!trimmedBody) {
-    return undefined;
-  }
-
-  return `${trimmedBody}${formatAiAuthorshipFooter(subject, llmModel)}`;
+function normalizeOptionalPublicBody(body: string, _subject: string, _llmModel?: string): string | undefined {
+  return body.trim() || undefined;
 }
 
 async function fetchGitHubIssue(
@@ -23672,7 +23634,7 @@ function registerGitHubAgentTools(ctx: PluginSetupContext): void {
         : undefined;
       const llmModel = normalizeOptionalToolString(input.llmModel);
       const body = Object.prototype.hasOwnProperty.call(input, 'body') && typeof input.body === 'string'
-        ? appendOptionalAiAuthorshipFooter(input.body, 'issue description', llmModel)
+        ? normalizeOptionalPublicBody(input.body, 'issue description', llmModel)
         : undefined;
       const milestoneNumber = Object.prototype.hasOwnProperty.call(input, 'milestoneNumber')
         ? input.milestoneNumber === null
@@ -23847,7 +23809,7 @@ function registerGitHubAgentTools(ctx: PluginSetupContext): void {
       const input = getToolInputRecord(params);
       const target = await resolveGitHubIssueToolTarget(ctx, runCtx, input);
       const octokit = await createAgentToolOctokit(runCtx, 'add_issue_comment', target.repository);
-      const body = appendAiAuthorshipFooter(String(input.body ?? ''), 'comment', normalizeOptionalToolString(input.llmModel));
+      const body = normalizeRequiredPublicBody(String(input.body ?? ''), 'comment', normalizeOptionalToolString(input.llmModel));
       const response = await octokit.rest.issues.createComment({
         owner: target.repository.owner,
         repo: target.repository.repo,
@@ -23959,7 +23921,7 @@ function registerGitHubAgentTools(ctx: PluginSetupContext): void {
       });
 
       const body = typeof input.body === 'string'
-        ? appendOptionalAiAuthorshipFooter(
+        ? normalizeOptionalPublicBody(
             input.body,
             'pull request description',
             normalizeOptionalToolString(input.llmModel)
@@ -24237,7 +24199,7 @@ function registerGitHubAgentTools(ctx: PluginSetupContext): void {
         : undefined;
       const llmModel = normalizeOptionalToolString(input.llmModel);
       const body = Object.prototype.hasOwnProperty.call(input, 'body') && typeof input.body === 'string'
-        ? appendOptionalAiAuthorshipFooter(input.body, 'pull request description', llmModel)
+        ? normalizeOptionalPublicBody(input.body, 'pull request description', llmModel)
         : undefined;
       const base = normalizeOptionalToolString(input.base);
       const state = input.state === 'open' || input.state === 'closed' ? input.state : undefined;
@@ -24485,7 +24447,7 @@ function registerGitHubAgentTools(ctx: PluginSetupContext): void {
         throw new Error('threadId is required.');
       }
 
-      const body = appendAiAuthorshipFooter(String(input.body ?? ''), 'comment', normalizeOptionalToolString(input.llmModel));
+      const body = normalizeRequiredPublicBody(String(input.body ?? ''), 'comment', normalizeOptionalToolString(input.llmModel));
       const octokit = await createAgentToolOctokit(runCtx, 'reply_to_review_thread');
       const response = await octokit.graphql<GitHubAddPullRequestReviewThreadReplyMutationResult>(
         GITHUB_ADD_PULL_REQUEST_REVIEW_THREAD_REPLY_MUTATION,
